@@ -1,0 +1,5 @@
+clickhouse-connect
+fastapi
+uvicorn[standard]
+pydantic
+

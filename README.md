@@ -14,7 +14,7 @@ Active Intelligence Dashboard for Hospitality. Features Funnel Lab, Segment Stud
 - **Node.js** (v18 or higher recommended)
 - **Google Gemini API Key** - Get one at [Google AI Studio](https://makersuite.google.com/app/apikey)
 
-## Getting Started
+## Getting Started (Frontend + Python API)
 
 1. **Clone the repository** (if you haven't already)
 
@@ -36,12 +36,24 @@ Active Intelligence Dashboard for Hospitality. Features Funnel Lab, Segment Stud
    ```
    Then edit `.env.local` and add your Gemini API key.
 
-4. **Run the development server:**
+4. **Run the Python API (in your virtualenv):**
+   ```bash
+   # activate your existing venv
+   source /home/rajivratan/ai/bin/activate
+
+   # install backend dependencies
+   pip install -r requirements.txt
+
+   # start FastAPI with uvicorn
+   uvicorn api:app --reload --port 8000
+   ```
+
+5. **Run the React development server (in another terminal):**
    ```bash
    npm run dev
    ```
 
-5. **Open your browser:**
+6. **Open your browser:**
    
    Navigate to `http://localhost:3000`
 
@@ -78,7 +90,11 @@ Active Intelligence Dashboard for Hospitality. Features Funnel Lab, Segment Stud
 
 ## Configuration
 
-The app uses environment variables for configuration. See `.env.local.example` for available options.
+The app uses:
+
+- `.env.local` for **frontend** configuration (Gemini API key)
+- `requirements.txt` + `database.py` / `api.py` for the **Python ClickHouse backend**
+
 
 ## License
 
