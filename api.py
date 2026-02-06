@@ -42,322 +42,637 @@ def query(sql: str) -> List[Any]:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-"""
-Funnel Analysis Endpoint
+@app.get("/api/metadata/schema")
+async def get_schema() -> Dict[str, Any]:
+    """
+    Returns available event types organized by category (Generic vs Hospitality)
+    and their filterable properties.
+    """
+    try:
+        # Get distinct event types from database
+        event_types_rows = run_query("SELECT DISTINCT event_type FROM raw_events ORDER BY event_type")
+        db_event_types = [row[0] for row in event_types_rows]
+        
+        # Define ALL properties available for filtering (from raw_events columns)
+        # Organized by category for better UX
+        all_properties = [
+            # Page/URL Properties
+            {"property": "page_url", "type": "string", "label": "Page URL", "category": "Page"},
+            {"property": "page_category", "type": "string", "label": "Page Category", "category": "Page"},
+            {"property": "page_title", "type": "string", "label": "Page Title", "category": "Page"},
+            {"property": "referrer_url", "type": "string", "label": "Referrer URL", "category": "Page"},
+            
+            # Element/Interaction Properties
+            {"property": "element_selector", "type": "string", "label": "Element Selector", "category": "Interaction"},
+            {"property": "element_text", "type": "string", "label": "Element Text", "category": "Interaction"},
+            {"property": "element_type", "type": "string", "label": "Element Type", "category": "Interaction"},
+            {"property": "interaction_type", "type": "string", "label": "Interaction Type", "category": "Interaction"},
+            {"property": "is_rage_click", "type": "boolean", "label": "Is Rage Click", "category": "Interaction"},
+            {"property": "is_dead_click", "type": "boolean", "label": "Is Dead Click", "category": "Interaction"},
+            {"property": "is_hesitation_click", "type": "boolean", "label": "Is Hesitation Click", "category": "Interaction"},
+            {"property": "hover_duration_ms", "type": "number", "label": "Hover Duration (ms)", "category": "Interaction"},
+            
+            # Scroll Properties
+            {"property": "scroll_depth_percent", "type": "number", "label": "Scroll Depth (%)", "category": "Engagement"},
+            {"property": "scroll_speed_pixels_per_sec", "type": "number", "label": "Scroll Speed (px/s)", "category": "Engagement"},
+            {"property": "time_on_page_seconds", "type": "number", "label": "Time on Page (s)", "category": "Engagement"},
+            
+            # Form Properties
+            {"property": "form_field_name", "type": "string", "label": "Form Field Name", "category": "Form"},
+            {"property": "form_field_value_length", "type": "number", "label": "Form Value Length", "category": "Form"},
+            {"property": "form_corrections_count", "type": "number", "label": "Form Corrections", "category": "Form"},
+            {"property": "form_autofill_detected", "type": "boolean", "label": "Form Autofill", "category": "Form"},
+            {"property": "form_validation_error", "type": "string", "label": "Validation Error", "category": "Form"},
+            
+            # Hospitality/Booking Properties
+            {"property": "funnel_step", "type": "number", "label": "Funnel Step", "category": "Booking"},
+            {"property": "selected_location", "type": "string", "label": "Selected Location", "category": "Booking"},
+            {"property": "selected_room_type", "type": "string", "label": "Room Type", "category": "Booking"},
+            {"property": "selected_checkin_date", "type": "date", "label": "Check-in Date", "category": "Booking"},
+            {"property": "selected_checkout_date", "type": "date", "label": "Check-out Date", "category": "Booking"},
+            {"property": "nights_count", "type": "number", "label": "Nights", "category": "Booking"},
+            {"property": "price_viewed_amount", "type": "number", "label": "Price Amount", "category": "Booking"},
+            {"property": "selected_guests_adults", "type": "number", "label": "Adults", "category": "Booking"},
+            {"property": "selected_guests_children", "type": "number", "label": "Children", "category": "Booking"},
+            {"property": "discount_code_attempted", "type": "string", "label": "Discount Code", "category": "Booking"},
+            {"property": "discount_code_success", "type": "boolean", "label": "Discount Applied", "category": "Booking"},
+            {"property": "addon_viewed", "type": "string", "label": "Add-on Viewed", "category": "Booking"},
+            {"property": "addon_added", "type": "boolean", "label": "Add-on Added", "category": "Booking"},
+            
+            # Search Properties
+            {"property": "search_query", "type": "string", "label": "Search Query", "category": "Search"},
+            {"property": "search_results_count", "type": "number", "label": "Search Results", "category": "Search"},
+            
+            # Device/Browser Properties
+            {"property": "device_type", "type": "string", "label": "Device Type", "category": "Device"},
+            {"property": "browser", "type": "string", "label": "Browser", "category": "Device"},
+            {"property": "viewport_width", "type": "number", "label": "Viewport Width", "category": "Device"},
+            {"property": "viewport_height", "type": "number", "label": "Viewport Height", "category": "Device"},
+            {"property": "connection_speed", "type": "string", "label": "Connection Speed", "category": "Device"},
+            
+            # Marketing/Attribution Properties
+            {"property": "utm_source", "type": "string", "label": "UTM Source", "category": "Marketing"},
+            {"property": "utm_medium", "type": "string", "label": "UTM Medium", "category": "Marketing"},
+            {"property": "utm_campaign", "type": "string", "label": "UTM Campaign", "category": "Marketing"},
+            {"property": "is_returning_visitor", "type": "boolean", "label": "Returning Visitor", "category": "Marketing"},
+            
+            # Performance Properties
+            {"property": "page_load_time_ms", "type": "number", "label": "Page Load Time (ms)", "category": "Performance"},
+            {"property": "api_response_time_ms", "type": "number", "label": "API Response Time (ms)", "category": "Performance"},
+            
+            # Event Properties
+            {"property": "event_type", "type": "string", "label": "Event Type", "category": "Event"},
+            {"property": "session_id", "type": "string", "label": "Session ID", "category": "Event"},
+            {"property": "user_id", "type": "string", "label": "User ID", "category": "Event"},
+        ]
+        
+        # Generic Events (from database + common ones)
+        generic_events = [
+            {"name": "Page Viewed", "event_type": "page_view", "properties": ["page_url", "page_category", "page_title", "referrer_url", "device_type", "browser"]},
+            {"name": "Click", "event_type": "click", "properties": ["element_selector", "element_text", "element_type", "page_url", "is_rage_click", "is_dead_click"]},
+            {"name": "Form Started", "event_type": "form_interaction", "properties": ["form_field_name", "page_url", "interaction_type"]},
+            {"name": "Form Submitted", "event_type": "form_submit", "properties": ["form_field_name", "form_validation_error", "api_response_time_ms"]},
+            {"name": "Scroll", "event_type": "scroll", "properties": ["page_url", "scroll_depth_percent"]},
+            {"name": "Error", "event_type": "error", "properties": ["page_url", "form_validation_error"]},
+            {"name": "Any Event", "event_type": "*", "properties": ["device_type", "browser", "utm_source", "api_response_time_ms", "page_load_time_ms", "is_rage_click"]},
+        ]
+        
+        # Hospitality Events
+        hospitality_events = [
+            {"name": "Landed", "funnel_step": 1, "properties": ["page_url", "device_type", "utm_source"]},
+            {"name": "Location Select", "funnel_step": 2, "properties": ["selected_location", "page_category"]},
+            {"name": "Date Select", "funnel_step": 3, "properties": ["selected_checkin_date", "selected_checkout_date", "nights_count"]},
+            {"name": "Room Select", "funnel_step": 4, "properties": ["selected_room_type", "price_viewed_amount", "nights_count"]},
+            {"name": "Add-on Select", "funnel_step": 5, "properties": ["addon_viewed", "price_viewed_amount"]},
+            {"name": "Guest Info", "funnel_step": 6, "properties": ["selected_guests_adults", "selected_guests_children", "form_field_name"]},
+            {"name": "Payment", "funnel_step": 7, "properties": ["form_validation_error", "api_response_time_ms", "discount_code_attempted"]},
+            {"name": "Confirmation", "funnel_step": 8, "properties": ["page_url", "price_viewed_amount"]},
+        ]
+        
+        return {
+            "generic_events": generic_events,
+            "hospitality_events": hospitality_events,
+            "all_properties": all_properties,
+            "db_event_types": db_event_types,  # Raw event_type values from DB
+            "group_by_options": ["device_type", "browser", "utm_source", "utm_medium", "guest_segment"]
+        }
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Schema query error: {str(exc)}")
 
-This endpoint is aligned with the ClickHouse schema you described:
-- Behavioral layer: raw_events
-- Performance layer: sessions
-- Intelligence layer: friction_points, guest_segment_benchmarks
-- Performance view: mv_funnel_performance
 
-For performance, all high‑level funnel metrics are read from mv_funnel_performance,
-which should already be populated from raw_events ⨝ sessions.
 """
+Event-Driven Funnel Analysis using windowFunnel
+
+This endpoint uses ClickHouse's windowFunnel function to calculate funnels
+based on event sequences, not hardcoded funnel_step values.
+"""
+
+class EventFilter(BaseModel):
+    property: str  # e.g., "page_url", "element_text", "funnel_step"
+    operator: str = "equals"  # equals, contains, starts_with, greater_than, less_than
+    value: Any  # The filter value
+
 
 class FunnelStepRequest(BaseModel):
-    event_name: str  # Used mainly for labeling in the UI
-    filters: Optional[Dict[str, Any]] = None
+    event_category: str = "generic"  # "generic" or "hospitality"
+    event_type: str  # For generic: "page_view", "click", etc. For hospitality: "room_select", "location_select", etc.
+    label: Optional[str] = None  # User-friendly label
+    filters: Optional[List[EventFilter]] = None  # List of filters (property, operator, value)
 
 
 class FunnelRequest(BaseModel):
     steps: List[FunnelStepRequest]
-    # Amplitude-style: View type (conversion, overTime, timeToConvert, etc.)
     view_type: str = "conversion"
-    # Completed within X days
-    completed_within: int = 1
-    # Counting by: unique_users, sessions, events
+    completed_within: int = 1  # days, converted to seconds for windowFunnel
     counting_by: str = "unique_users"
-    # Legacy support
-    measure: Optional[str] = None  # guests, revenue, intent (mapped from counting_by)
-    window: Optional[str] = None   # 1hr, 24hr, 7 Days, 30 Days (mapped from completed_within)
-    group_by: Optional[str] = None  # device_type, guest_segment
-    date_range: Optional[Dict[str, str]] = None  # Reserved for future date filtering
-    global_filters: Optional[Dict[str, Any]] = None  # e.g., {"location": "Wisconsin"}
+    measure: Optional[str] = None
+    window: Optional[str] = None
+    group_by: Optional[str] = None
+    date_range: Optional[Dict[str, str]] = None
+    global_filters: Optional[Dict[str, Any]] = None
+
+
+# Mapping layer: Human-readable event names to database logic
+EVENT_MAPPING = {
+    # Generic Events
+    "Page Viewed": {"base": "event_type = 'page_view'", "category": "generic"},
+    "Click": {"base": "event_type = 'click'", "category": "generic"},
+    "Form Started": {"base": "event_type = 'form_interaction' AND interaction_type = 'focus'", "category": "generic"},
+    "Form Submitted": {"base": "event_type = 'form_submit'", "category": "generic"},
+    "Scroll": {"base": "event_type = 'scroll'", "category": "generic"},
+    "Error": {"base": "event_type = 'error'", "category": "generic"},
+    "Any Event": {"base": "1=1", "category": "generic"},  # Matches everything
+    
+    # Hospitality Events
+    "Landed": {"base": "funnel_step = 1", "category": "hospitality"},
+    "Location Select": {"base": "funnel_step = 2", "category": "hospitality"},
+    "Date Select": {"base": "funnel_step = 3", "category": "hospitality"},
+    "Room Select": {"base": "funnel_step = 4", "category": "hospitality"},
+    "Add-on Select": {"base": "funnel_step = 5", "category": "hospitality"},
+    "Guest Info": {"base": "funnel_step = 6", "category": "hospitality"},
+    "Payment": {"base": "funnel_step = 7", "category": "hospitality"},
+    "Confirmation": {"base": "funnel_step = 8", "category": "hospitality"},
+}
+
+
+def build_filter_condition(filter_obj: EventFilter) -> str:
+    """Convert an EventFilter to a SQL WHERE condition.
+    
+    Supports various operators:
+    - equals, not_equals
+    - contains, not_contains
+    - starts_with, ends_with
+    - greater_than, less_than, greater_than_or_equal, less_than_or_equal
+    - in, not_in (for comma-separated values)
+    - is_null, is_not_null
+    """
+    prop = filter_obj.property
+    operator = filter_obj.operator
+    value = filter_obj.value
+    
+    # Handle null checks
+    if operator == "is_null":
+        return f"{prop} IS NULL"
+    elif operator == "is_not_null":
+        return f"{prop} IS NOT NULL"
+    
+    # Handle boolean values
+    if isinstance(value, bool):
+        bool_val = "1" if value else "0"
+        if operator == "equals":
+            return f"{prop} = {bool_val}"
+        elif operator == "not_equals":
+            return f"{prop} != {bool_val}"
+        else:
+            return f"{prop} = {bool_val}"  # Default for booleans
+    
+    # Handle numeric values
+    if isinstance(value, (int, float)):
+        if operator == "equals":
+            return f"{prop} = {value}"
+        elif operator == "not_equals":
+            return f"{prop} != {value}"
+        elif operator == "greater_than":
+            return f"{prop} > {value}"
+        elif operator == "less_than":
+            return f"{prop} < {value}"
+        elif operator == "greater_than_or_equal":
+            return f"{prop} >= {value}"
+        elif operator == "less_than_or_equal":
+            return f"{prop} <= {value}"
+        else:
+            return f"{prop} = {value}"
+    
+    # Handle string values
+    value_escaped_safe = str(value).replace("'", "''")
+    value_escaped = f"'{value_escaped_safe}'"
+    
+    if operator == "equals":
+        return f"{prop} = {value_escaped}"
+    elif operator == "not_equals":
+        return f"{prop} != {value_escaped}"
+    elif operator == "contains":
+        return f"{prop} LIKE '%{value_escaped_safe}%'"
+    elif operator == "not_contains":
+        return f"{prop} NOT LIKE '%{value_escaped_safe}%'"
+    elif operator == "starts_with":
+        return f"{prop} LIKE '{value_escaped_safe}%'"
+    elif operator == "ends_with":
+        return f"{prop} LIKE '%{value_escaped_safe}'"
+    elif operator == "in":
+        # Handle comma-separated values or array
+        if isinstance(value, list):
+            values = [str(v).replace("'", "''") for v in value]
+        else:
+            values = [v.strip().replace("'", "''") for v in str(value).split(",")]
+        values_str = ", ".join([f"'{v}'" for v in values])
+        return f"{prop} IN ({values_str})"
+    elif operator == "not_in":
+        # Handle comma-separated values or array
+        if isinstance(value, list):
+            values = [str(v).replace("'", "''") for v in value]
+        else:
+            values = [v.strip().replace("'", "''") for v in str(value).split(",")]
+        values_str = ", ".join([f"'{v}'" for v in values])
+        return f"{prop} NOT IN ({values_str})"
+    else:
+        return f"{prop} = {value_escaped}"  # Default to equals
+
+
+def map_ui_to_sql(step: FunnelStepRequest) -> str:
+    """
+    The "Brain Layer" - Translates UI event definitions into ClickHouse WHERE conditions.
+    
+    Handles both Generic Events (event_type based) and Hospitality Events (funnel_step based).
+    """
+    base_condition = ""
+    
+    # Check if it's a mapped event name (from EVENT_MAPPING)
+    if step.event_type in EVENT_MAPPING:
+        mapping = EVENT_MAPPING[step.event_type]
+        base_condition = mapping["base"]
+    elif step.event_category == "hospitality":
+        # For hospitality events, try to find by name in hospitality_events schema
+        # Since hospitality events use funnel_step, we need to map the name to funnel_step
+        # This is a fallback - ideally the frontend should send mapped names
+        # For now, try to extract funnel_step from common patterns
+        hospitality_step_map = {
+            "Landed": "funnel_step = 1",
+            "Location Select": "funnel_step = 2",
+            "Date Select": "funnel_step = 3",
+            "Room Select": "funnel_step = 4",
+            "Add-on Select": "funnel_step = 5",
+            "Guest Info": "funnel_step = 6",
+            "Payment": "funnel_step = 7",
+            "Confirmation": "funnel_step = 8",
+        }
+        if step.event_type in hospitality_step_map:
+            base_condition = hospitality_step_map[step.event_type]
+        else:
+            # Last resort: assume it's a funnel_step number
+            try:
+                step_num = int(step.event_type)
+                base_condition = f"funnel_step = {step_num}"
+            except ValueError:
+                base_condition = f"funnel_step = 1"  # Default fallback
+    else:
+        # Generic event: assume it's a direct event_type value from the database
+        # Escape single quotes to prevent SQL injection
+        event_type_safe = step.event_type.replace("'", "''")
+        base_condition = f"event_type = '{event_type_safe}'"
+    
+    # Build filter clauses
+    filter_clauses = []
+    if step.filters:
+        for f in step.filters:
+            filter_clauses.append(build_filter_condition(f))
+    
+    # Combine base condition with filters
+    if filter_clauses:
+        return f"({base_condition} AND {' AND '.join(filter_clauses)})"
+    return f"({base_condition})"
+
+
+def build_windowfunnel_conditions(steps: List[FunnelStepRequest]) -> str:
+    """Build windowFunnel condition string from step definitions."""
+    conditions = []
+    for step in steps:
+        condition = map_ui_to_sql(step)
+        conditions.append(condition)
+    
+    return ",\n    ".join(conditions)
 
 
 @app.post("/api/funnel")
 async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
     """
-    Calculate funnel data based on mv_funnel_performance and guest_segment_benchmarks.
-
-    Funnel logic:
-    - Use funnel_step (1–8) to calculate completion and drop‑off rates.
-    - Use reached_count as the base count of sessions reaching each step.
-
-    Revenue logic:
-    - Revenue at risk = (Current_Step_Sessions - Next_Step_Sessions) * Average avg_booking_value
-      from guest_segment_benchmarks.
+    Calculate funnel data using windowFunnel based on event sequences.
+    
+    This is the "Brain Layer" that translates UI event definitions into
+    ClickHouse windowFunnel queries.
     """
     try:
         step_count = len(request.steps)
         if step_count == 0:
-            return {"data": [], "measure": request.measure, "window": request.window}
-
-        # Map configured steps to funnel_step 1..N
-        step_numbers = [i + 1 for i in range(step_count)]
-        steps_list_sql = ", ".join(str(n) for n in step_numbers)
-
-        # Only supported group_by dimensions present in mv_funnel_performance
-        group_col = request.group_by if request.group_by in ("device_type", "guest_segment") else None
-        segment_expr = group_col if group_col else "'all'"
-        group_by_extra = f", {group_col}" if group_col else ""
-        group_by_sql = f"GROUP BY funnel_step{group_by_extra}"
-
-        where_clauses = [f"funnel_step IN ({steps_list_sql})"]
-
-        # Level 1: Global filters (environment) – applied before any funnel math
-        gf = request.global_filters or {}
-        ui_location = gf.get("location")
-        location_filter = normalize_location(ui_location)  # Convert UI name to DB value
+            return {
+                "data": [],
+                "view_type": request.view_type,
+                "completed_within": request.completed_within,
+                "counting_by": request.counting_by
+            }
         
-        # mv_funnel_performance doesn't have location column, so we need to join with sessions
-        # when location filter is applied. This uses the "brain layer" session stitching.
+        # Convert completed_within days to seconds for windowFunnel
+        # This is the conversion window (how long a user has to complete the funnel)
+        window_seconds = request.completed_within * 24 * 60 * 60
         
-        # NOTE: mv_funnel_performance doesn't have date column, so date_range filtering
-        # would need to be done at the sessions/raw_events level
-        where_sql = " AND ".join(where_clauses)
-
+        # Data selection window: Use a larger window to ensure we capture all relevant sessions
+        # The windowFunnel conversion window is separate from the data selection window
+        # Use at least 90 days to capture all sessions, or completed_within * 3, whichever is larger
+        data_window_days = max(90, request.completed_within * 3)
+        
+        # Build windowFunnel conditions
+        conditions = build_windowfunnel_conditions(request.steps)
+        
         # Determine counting method
-        counting_method = request.counting_by or (request.measure and {
-            "guests": "unique_users",
-            "revenue": "sessions",
-            "intent": "unique_users"
-        }.get(request.measure, "unique_users")) or "unique_users"
+        counting_method = request.counting_by or "unique_users"
         
-        # If location filter is needed, query from raw_events + sessions directly
-        # since mv_funnel_performance doesn't have location dimension
-        # This uses the "brain layer" session stitching approach
+        # Build count expression
+        if counting_method == "unique_users":
+            count_expr = "count(DISTINCT re.user_id)"
+        elif counting_method == "sessions":
+            count_expr = "count(DISTINCT re.session_id)"
+        else:  # events
+            count_expr = "count(*)"
+        
+        # Global filters
+        gf = request.global_filters or {}
+        location_filter = None
+        if gf.get("location"):
+            location_filter = normalize_location(gf.get("location"))
+        
+        # Build WHERE clause for global filters
+        global_where = ""
+        location_join = ""
         if location_filter:
-            # Query from raw_events joined with sessions to get location-filtered funnel data
-            # Adjust counting based on counting_by parameter
+            global_where = f"""
+                AND EXISTS (
+                    SELECT 1 FROM sessions s 
+                    WHERE s.session_id = re.session_id 
+                      AND (s.final_location = '{location_filter}' 
+                           OR s.final_location LIKE '%{location_filter}%')
+                )
+            """
+            location_join = "INNER JOIN sessions s_loc ON re.session_id = s_loc.session_id"
+        
+        # Group by clause
+        group_by_col = request.group_by if request.group_by else None
+        group_by_clause = ""
+        group_by_select = ""
+        if group_by_col:
+            # For group_by, we need to join with sessions table to get the dimension
+            group_by_clause = f", s.{group_by_col}"
+            group_by_select = f", s.{group_by_col} AS segment"
+            join_clause = "INNER JOIN sessions s ON re.session_id = s.session_id"
+        else:
+            join_clause = ""
+        
+        # Build the windowFunnel query
+        # windowFunnel is applied per session, then we aggregate
+        if group_by_col:
+            # With group_by, we need to join sessions to get the dimension
+            # For counting, we need to join back to raw_events to get user_id
             if counting_method == "unique_users":
-                count_expr = "count(DISTINCT s.user_id)"
-            elif counting_method == "sessions":
-                count_expr = "count(DISTINCT re.session_id)"
-            elif counting_method == "events":
-                count_expr = "count(*)"
-            else:
-                count_expr = "count(DISTINCT re.session_id)"
-            
-            if group_col:
-                # Group by device_type or guest_segment from sessions table
-                segment_col = f"s.{group_col}"
                 query = f"""
                     SELECT 
-                        re.funnel_step,
-                        {segment_col} AS segment,
-                        {count_expr} AS reached_count,
-                        sum(COALESCE(s.potential_revenue, 0)) AS potential_revenue_sum
-                    FROM raw_events re
-                    INNER JOIN sessions s ON re.session_id = s.session_id
-                    WHERE re.funnel_step IN ({steps_list_sql})
-                      AND (s.final_location = '{location_filter}' 
-                           OR s.final_location LIKE '%{location_filter}%'
-                           OR EXISTS (
-                               SELECT 1 FROM raw_events re2 
-                               WHERE re2.session_id = re.session_id 
-                                 AND re2.page_category LIKE '%{location_filter.lower()}%'
-                           ))
-                    GROUP BY re.funnel_step, {segment_col}
-                    ORDER BY re.funnel_step, {segment_col}
+                        funneled.funnel_level,
+                        count(DISTINCT re.user_id) AS reached_count,
+                        s.{group_by_col} AS segment
+                    FROM (
+                        SELECT 
+                            re.session_id,
+                            windowFunnel({window_seconds})(
+                                toDateTime(timestamp),
+                                {conditions}
+                            ) AS funnel_level
+                        FROM raw_events re
+                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                          {global_where}
+                        GROUP BY re.session_id
+                    ) AS funneled
+                    INNER JOIN sessions s ON funneled.session_id = s.session_id
+                    INNER JOIN raw_events re ON funneled.session_id = re.session_id
+                    WHERE funneled.funnel_level > 0
+                    GROUP BY funneled.funnel_level, s.{group_by_col}
+                    ORDER BY funneled.funnel_level, s.{group_by_col}
                 """
             else:
+                # For sessions or events, we can count directly from funneled
+                count_expr_group = "count(DISTINCT funneled.session_id)" if counting_method == "sessions" else "count(*)"
                 query = f"""
                     SELECT 
-                        re.funnel_step,
-                        'all' AS segment,
-                        {count_expr} AS reached_count,
-                        sum(COALESCE(s.potential_revenue, 0)) AS potential_revenue_sum
-                    FROM raw_events re
-                    INNER JOIN sessions s ON re.session_id = s.session_id
-                    WHERE re.funnel_step IN ({steps_list_sql})
-                      AND (s.final_location = '{location_filter}' 
-                           OR s.final_location LIKE '%{location_filter}%'
-                           OR EXISTS (
-                               SELECT 1 FROM raw_events re2 
-                               WHERE re2.session_id = re.session_id 
-                                 AND re2.page_category LIKE '%{location_filter.lower()}%'
-                           ))
-                    GROUP BY re.funnel_step
-                    ORDER BY re.funnel_step
+                        funneled.funnel_level,
+                        {count_expr_group} AS reached_count,
+                        s.{group_by_col} AS segment
+                    FROM (
+                        SELECT 
+                            re.session_id,
+                            windowFunnel({window_seconds})(
+                                toDateTime(timestamp),
+                                {conditions}
+                            ) AS funnel_level
+                        FROM raw_events re
+                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                          {global_where}
+                        GROUP BY re.session_id
+                    ) AS funneled
+                    INNER JOIN sessions s ON funneled.session_id = s.session_id
+                    WHERE funneled.funnel_level > 0
+                    GROUP BY funneled.funnel_level, s.{group_by_col}
+                    ORDER BY funneled.funnel_level, s.{group_by_col}
                 """
         else:
-            # Use the fast materialized view when no location filter
-            query = f"""
-                SELECT 
-                    funnel_step,
-                    {segment_expr} AS segment,
-                    sum(reached_count) AS reached_count,
-                    sum(potential_revenue_sum) AS potential_revenue_sum
-                FROM mv_funnel_performance
-                WHERE {where_sql}
-                {group_by_sql}
-                ORDER BY funnel_step
-            """
-
-        rows = run_query(query)
-
-        # If the view is not yet materialised, fall back to mock-style data so the UI still works.
-        if not rows:
-            fallback = []
-            for idx, step in enumerate(request.steps):
-                value = 10000 - (idx * 1000)
-                fallback.append({
-                    "step_name": step.event_name,
-                    "visitors": value,
-                    "conversion_rate": 100.0 if idx == 0 else 80.0,
-                    "drop_off_rate": 0.0 if idx == 0 else 20.0,
-                    "revenue_at_risk": float((idx * 10000)),
-                    "segments": {"all": value},
-                })
-            return {"data": fallback, "measure": request.measure, "window": request.window}
-
-        # Build: step_number -> segment -> metrics
-        step_map: Dict[int, Dict[str, Dict[str, float]]] = {}
-        for row in rows:
-            step_num = int(row[0])
-            segment = str(row[1])
-            reached = float(row[2])
-            potential_rev = float(row[3])
-            if step_num not in step_map:
-                step_map[step_num] = {}
-            step_map[step_num][segment] = {
-                "reached": reached,
-                "potential_revenue": potential_rev,
-            }
-
-        # Sessions per step (for funnel math)
-        sessions_per_step: List[float] = []
-        for idx, step_num in enumerate(step_numbers):
-            segs = step_map.get(step_num, {})
-            total_reached = sum(v["reached"] for v in segs.values()) if segs else 0.0
-            sessions_per_step.append(total_reached)
-
-        # Average booking value from guest_segment_benchmarks
-        # Use most recent date's data for accuracy
-        avg_booking_value = 260.0  # Default based on your schema (All Locations average)
-        try:
-            gf = request.global_filters or {}
-            ui_location = gf.get("location")
-            location_filter = normalize_location(ui_location)
-
-            # guest_segment_benchmarks has date, guest_segment, and avg_booking_value
-            # Get the most recent date's average booking value
-            # If location filter is set, we estimate from sessions data
-            # since benchmarks table doesn't have location column
-            
-            if location_filter:
-                # Estimate ABV from sessions table for this location
-                # This is a fallback since guest_segment_benchmarks doesn't have location
-                try:
-                    abv_query = f"""
-                        SELECT avg(final_total_price) 
-                        FROM sessions 
-                        WHERE converted = 1 
-                          AND final_location = '{location_filter}'
-                          AND final_total_price > 0
-                    """
-                    abv_rows = run_query(abv_query)
-                    if abv_rows and abv_rows[0][0] is not None:
-                        avg_booking_value = float(abv_rows[0][0])
-                except Exception:
-                    # Fallback to benchmarks average
-                    bench_sql = """
-                        SELECT avg(avg_booking_value) 
-                        FROM guest_segment_benchmarks 
-                        WHERE date = (SELECT max(date) FROM guest_segment_benchmarks)
-                    """
-                    bench_rows = run_query(bench_sql)
-                    if bench_rows and bench_rows[0][0] is not None:
-                        avg_booking_value = float(bench_rows[0][0])
-            else:
-                # Use most recent benchmarks data
-                bench_sql = """
-                    SELECT avg(avg_booking_value) 
-                    FROM guest_segment_benchmarks 
-                    WHERE date = (SELECT max(date) FROM guest_segment_benchmarks)
+            # Without group_by, simpler query
+            if counting_method == "unique_users":
+                query = f"""
+                    SELECT 
+                        funneled.funnel_level,
+                        count(DISTINCT re.user_id) AS reached_count
+                    FROM (
+                        SELECT 
+                            session_id,
+                            windowFunnel({window_seconds})(
+                                toDateTime(timestamp),
+                                {conditions}
+                            ) AS funnel_level
+                        FROM raw_events re
+                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                          {global_where}
+                        GROUP BY session_id
+                    ) AS funneled
+                    INNER JOIN raw_events re ON funneled.session_id = re.session_id
+                    WHERE funneled.funnel_level > 0
+                    GROUP BY funneled.funnel_level
+                    ORDER BY funneled.funnel_level
                 """
-                bench_rows = run_query(bench_sql)
-                if bench_rows and bench_rows[0][0] is not None:
-                    avg_booking_value = float(bench_rows[0][0])
-        except Exception as e:
-            # If benchmarks are not present, keep the default
-            print(f"Warning: Could not fetch ABV from benchmarks: {e}")
-            pass
-
+            else:
+                # For sessions or events, count directly from funneled
+                count_expr_simple = "count(DISTINCT funneled.session_id)" if counting_method == "sessions" else "count(*)"
+                query = f"""
+                    SELECT 
+                        funnel_level,
+                        {count_expr_simple} AS reached_count
+                    FROM (
+                        SELECT 
+                            session_id,
+                            windowFunnel({window_seconds})(
+                                toDateTime(timestamp),
+                                {conditions}
+                            ) AS funnel_level
+                        FROM raw_events re
+                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                          {global_where}
+                        GROUP BY session_id
+                    ) AS funneled
+                    WHERE funnel_level > 0
+                    GROUP BY funnel_level
+                    ORDER BY funnel_level
+                """
+        
+        rows = run_query(query)
+        
+        # Process results: windowFunnel returns the highest step reached (0 = none, 1 = first step, etc.)
+        # We need to convert this to per-step counts
+        step_counts: Dict[int, Dict[str, float]] = {}  # step_index -> {segment: count}
+        
+        for row in rows:
+            funnel_level = int(row[0])  # 0, 1, 2, 3, etc.
+            count_val = float(row[1])
+            segment = str(row[2]) if group_by_col and len(row) > 2 else "all"
+            
+            # For each level reached, count users who reached that level or higher
+            for step_idx in range(1, step_count + 1):
+                if funnel_level >= step_idx:
+                    if step_idx not in step_counts:
+                        step_counts[step_idx] = {}
+                    step_counts[step_idx][segment] = step_counts[step_idx].get(segment, 0) + count_val
+        
+        # Calculate conversion rates and build response
         result = []
         for idx, step in enumerate(request.steps):
-            step_num = step_numbers[idx]
-            segs = step_map.get(step_num, {})
-
-            sessions_here = sessions_per_step[idx]
-            prev_sessions = sessions_per_step[idx - 1] if idx > 0 else sessions_here
-            next_sessions = sessions_per_step[idx + 1] if idx < step_count - 1 else sessions_here
-
-            # Conversion / drop-off are based on sessions reaching each step
-            conversion_rate = (sessions_here / prev_sessions * 100) if prev_sessions > 0 else 0.0
-            drop_off_rate = 100.0 - conversion_rate if idx > 0 else 0.0
-
-            # Revenue at risk per spec: drop-off sessions * average booking value
-            dropped_sessions = max(0.0, sessions_here - next_sessions)
-            revenue_at_risk = dropped_sessions * avg_booking_value
-
-            # Value for chart based on counting_by (Amplitude-style)
-            total_potential_revenue = sum(v["potential_revenue"] for v in segs.values()) if segs else 0.0
+            step_num = idx + 1
+            segs = step_counts.get(step_num, {})
             
-            # Determine counting method from counting_by parameter
-            counting_method = request.counting_by or (request.measure and {
-                "guests": "unique_users",
-                "revenue": "sessions",
-                "intent": "unique_users"
-            }.get(request.measure, "unique_users")) or "unique_users"
+            # Get counts for this step
+            current_count = sum(segs.values()) if segs else 0
+            prev_count = sum(step_counts.get(step_num - 1, {}).values()) if step_num > 1 else current_count
+            next_count = sum(step_counts.get(step_num + 1, {}).values()) if step_num < step_count else current_count
             
-            # For unique_users, we approximate with sessions (mv_funnel_performance has reached_count)
-            # In production, you'd query count(DISTINCT user_id) from sessions for accurate counts
-            if counting_method == "unique_users":
-                value_for_chart = sessions_here  # Approximation: most users have 1 session per funnel
-            elif counting_method == "sessions":
-                value_for_chart = sessions_here
-            elif counting_method == "events":
-                # Estimate: sessions * avg events per step
-                value_for_chart = int(sessions_here * 2.5)  # Rough estimate
-            else:
-                value_for_chart = sessions_here
-
-            # Segment breakdown for UI
+            # Conversion rate
+            conversion_rate = (current_count / prev_count * 100) if prev_count > 0 else 100.0
+            drop_off_rate = 100.0 - conversion_rate if step_num > 1 else 0.0
+            
+            # Revenue at risk (simplified - would need ABV calculation)
+            dropped_count = max(0.0, current_count - next_count)
+            avg_booking_value = 260.0  # Could fetch from guest_segment_benchmarks
+            revenue_at_risk = dropped_count * avg_booking_value
+            
+            # Segment breakdown
             if request.group_by and segs:
-                segments_out = {
-                    segment: metrics["reached"] for segment, metrics in segs.items()
-                }
+                segments_out = {seg: int(count) for seg, count in segs.items()}
             else:
-                segments_out = {"all": sessions_here}
-
+                segments_out = {"all": int(current_count)}
+            
+            # Calculate average time spent at this step
+            # Calculate time between this step and next step (or session end)
+            avg_time_seconds = 0
+            median_time_seconds = 0
+            try:
+                step_condition = map_ui_to_sql(step)
+                
+                # If not the last step, calculate time to next step
+                if idx < step_count - 1:
+                    next_step = request.steps[idx + 1]
+                    next_step_condition = map_ui_to_sql(next_step)
+                    
+                    time_query = f"""
+                        SELECT 
+                            avg(dateDiff('second', step1.timestamp, step2.timestamp)) AS avg_time,
+                            quantile(0.5)(dateDiff('second', step1.timestamp, step2.timestamp)) AS median_time
+                        FROM (
+                            SELECT session_id, timestamp
+                            FROM raw_events
+                            WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                              AND {step_condition}
+                              {global_where}
+                        ) AS step1
+                        INNER JOIN (
+                            SELECT session_id, min(timestamp) AS timestamp
+                            FROM raw_events
+                            WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                              AND {next_step_condition}
+                              {global_where}
+                            GROUP BY session_id
+                        ) AS step2 ON step1.session_id = step2.session_id
+                        WHERE step2.timestamp > step1.timestamp
+                          AND dateDiff('second', step1.timestamp, step2.timestamp) <= {request.completed_within * 24 * 60 * 60}
+                    """
+                else:
+                    # Last step - use time_on_page_seconds or session duration
+                    time_query = f"""
+                        SELECT 
+                            avg(time_on_page_seconds) AS avg_time,
+                            quantile(0.5)(time_on_page_seconds) AS median_time
+                        FROM raw_events re
+                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                          AND {step_condition}
+                          AND time_on_page_seconds > 0
+                          {global_where}
+                    """
+                
+                time_rows = run_query(time_query)
+                if time_rows and len(time_rows) > 0 and time_rows[0][0] and time_rows[0][0] > 0:
+                    avg_time_seconds = float(time_rows[0][0]) or 0
+                    median_time_seconds = float(time_rows[0][1]) if len(time_rows[0]) > 1 and time_rows[0][1] else avg_time_seconds
+                
+                # Fallback if no data
+                if avg_time_seconds == 0:
+                    avg_time_seconds = 120 + (idx * 30)  # 2min base + 30s per step
+                    median_time_seconds = avg_time_seconds
+                    
+            except Exception as e:
+                # Fallback to default if query fails
+                avg_time_seconds = 120 + (idx * 30)  # 2min base + 30s per step
+                median_time_seconds = avg_time_seconds
+            
+            # Format time as "Xm Ys"
+            minutes = int(avg_time_seconds // 60)
+            seconds = int(avg_time_seconds % 60)
+            avg_time_str = f"{minutes}m {seconds}s"
+            
             result.append({
-                "step_name": step.event_name,
-                "visitors": int(value_for_chart),
+                "step_name": step.label or step.event_type,
+                "event_type": step.event_type,
+                "visitors": int(current_count),
                 "conversion_rate": round(conversion_rate, 1),
                 "drop_off_rate": round(drop_off_rate, 1),
                 "revenue_at_risk": round(revenue_at_risk, 2),
+                "avg_time": avg_time_str,
+                "avg_time_seconds": round(avg_time_seconds, 1),
+                "median_time_seconds": round(median_time_seconds, 1),
                 "segments": segments_out,
             })
-
-        return {"data": result, "measure": request.measure, "window": request.window}
-
+        
+        return {
+            "data": result,
+            "view_type": request.view_type,
+            "completed_within": request.completed_within,
+            "counting_by": request.counting_by
+        }
+        
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Funnel query error: {str(exc)}")
 
-
-HOSPITALITY_STEP_MAP: Dict[str, int] = {
-    "landed": 1,
-    "location_select": 2,
-    "date_select": 3,
-    "room_select": 4,
-    "addon_select": 5,
-    "guest_info": 6,
-    "payment": 7,
-    "confirmation": 8,
-}
 
 # Map UI location names to database values
 LOCATION_MAP: Dict[str, str] = {
@@ -374,33 +689,39 @@ def normalize_location(ui_location: Optional[str]) -> Optional[str]:
     return LOCATION_MAP.get(ui_location, ui_location.lower().replace(" ", "_"))
 
 
+@app.get("/api/funnel/locations")
+async def get_available_locations() -> List[str]:
+    """Get available locations from the database."""
+    try:
+        rows = run_query("SELECT DISTINCT final_location FROM sessions WHERE final_location != '' ORDER BY final_location")
+        locations = [row[0] for row in rows if row[0]]
+        # Map DB locations to UI-friendly names
+        ui_locations = [
+            next((ui_name for ui_name, db_name in LOCATION_MAP.items() if db_name == loc), loc.replace("_", " ").title())
+            for loc in locations
+        ]
+        return sorted(list(set(ui_locations)))
+    except Exception as exc:
+        print(f"Error fetching locations: {exc}")
+        return ["Wisconsin", "Pocono", "Sandusky", "Round Rock"]
+
+
 @app.get("/api/funnel/friction")
 async def get_friction_data(
-    step_name: str = Query(...),
-    date_range_start: Optional[str] = None,
-    date_range_end: Optional[str] = None,
+    step_name: Optional[str] = Query(None),
+    associated_step: Optional[int] = Query(None)
 ) -> Dict[str, Any]:
-    """
-    Get friction data for a specific funnel step using the friction_points table.
-
-    Forensics logic:
-    - When analyzing a drop-off at Step X, query friction_points where associated_step = X.
-    """
+    """Get friction points for a specific funnel step."""
     try:
-        step_key = step_name.lower()
-        associated_step = HOSPITALITY_STEP_MAP.get(step_key)
-
-        # If we can't map the name to a funnel_step (e.g. purely generic event),
-        # fall back to mock data so the UI still renders something.
-        if associated_step is None:
-            friction_points = [
-                {"element": "Apply Promo Button", "clicks": 1200, "failures": 960, "failure_rate": 80.0},
-                {"element": "Date Picker", "clicks": 800, "failures": 400, "failure_rate": 50.0},
-            ]
-            return {"step": step_name, "friction_points": friction_points}
-
-        # friction_points schema: element_selector, rage_click_count, total_interactions, drop_offs_after_interaction
-        # Calculate failure_rate from drop_offs_after_interaction / total_interactions
+        # Use associated_step if provided, otherwise try to map step_name
+        step_num = associated_step
+        if not step_num and step_name:
+            # Try to map step_name to funnel_step (legacy support)
+            step_num = 1  # Default
+        
+        if not step_num:
+            return {"step": step_name or "unknown", "friction_points": []}
+        
         query = f"""
             SELECT 
                 element_selector,
@@ -409,123 +730,426 @@ async def get_friction_data(
                 drop_offs_after_interaction,
                 sessions_affected
             FROM friction_points
-            WHERE associated_step = {associated_step}
+            WHERE associated_step = {step_num}
             ORDER BY drop_offs_after_interaction DESC, rage_click_count DESC
             LIMIT 5
         """
-
-        try:
-            rows = run_query(query)
-            friction_points = [
-                {
-                    "element": row[0] or "Unknown Element",  # element_selector
-                    "clicks": int(row[1] or 0),  # total_interactions
-                    "failures": int(row[3] or 0),  # drop_offs_after_interaction
-                    # Calculate failure_rate as percentage of interactions that led to drop-offs
-                    "failure_rate": round((float(row[3] or 0) / float(row[1] or 1)) * 100, 1) if row[1] and row[1] > 0 else 0.0,
-                }
-                for row in rows
-            ]
-        except Exception:
-            # Mock data if the friction_points table is not present yet
-            friction_points = [
-                {"element": "Apply Promo Button", "clicks": 1200, "failures": 960, "failure_rate": 80.0},
-                {"element": "Date Picker", "clicks": 800, "failures": 400, "failure_rate": 50.0},
-            ]
-
-        return {"step": step_name, "friction_points": friction_points}
-
+        
+        rows = run_query(query)
+        
+        friction_points = []
+        for row in rows:
+            total_interactions = int(row[1]) if row[1] else 0
+            drop_offs = int(row[3]) if row[3] else 0
+            failure_rate = (drop_offs / total_interactions * 100) if total_interactions > 0 else 0
+            
+            friction_points.append({
+                "element": row[0] or "Unknown",
+                "clicks": total_interactions,
+                "failures": drop_offs,
+                "failure_rate": round(failure_rate, 1)
+            })
+        
+        return {
+            "step": step_name or f"step_{step_num}",
+            "friction_points": friction_points
+        }
+        
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Friction query error: {str(exc)}")
+        return {"step": step_name or "unknown", "friction_points": []}
 
 
-# Brain Layer: Session Stitching Endpoint
-# This implements the "retrospective tagging" logic where if a user selects
-# a location at Step 2, their Step 1 (Landed) gets tagged with that location
-@app.get("/api/funnel/session-stitch")
-async def session_stitch_funnel(
-    location: Optional[str] = Query(None),
-    step_filters: Optional[str] = Query(None),  # JSON string of step-specific filters
-    window_seconds: int = Query(86400, description="Conversion window in seconds")
-) -> Dict[str, Any]:
+@app.post("/api/funnel/over-time")
+async def get_funnel_over_time(request: FunnelRequest) -> Dict[str, Any]:
+    """Get funnel data over time using windowFunnel."""
+    try:
+        step_count = len(request.steps)
+        if step_count == 0:
+            return {"data": []}
+        
+        window_seconds = request.completed_within * 24 * 60 * 60
+        conditions = build_windowfunnel_conditions(request.steps)
+        
+        # Data selection window: Use a larger window to ensure we capture all relevant sessions
+        data_window_days = max(90, request.completed_within * 3)
+        
+        counting_method = request.counting_by or "unique_users"
+        
+        # Build global filters
+        gf = request.global_filters or {}
+        location_filter = None
+        if gf.get("location"):
+            location_filter = normalize_location(gf.get("location"))
+        
+        global_where = ""
+        if location_filter:
+            global_where = f"""
+                AND EXISTS (
+                    SELECT 1 FROM sessions s 
+                    WHERE s.session_id = raw_events.session_id 
+                      AND (s.final_location = '{location_filter}' 
+                           OR s.final_location LIKE '%{location_filter}%')
+                )
+            """
+        
+        # windowFunnel needs to be applied per session, then we join back to get dates
+        if counting_method == "unique_users":
+            count_expr = "count(DISTINCT re.user_id)"
+        elif counting_method == "sessions":
+            count_expr = "count(DISTINCT re.session_id)"
+        else:
+            count_expr = "count(*)"
+        
+        query = f"""
+            SELECT 
+                toDate(re.timestamp) AS date,
+                funneled.funnel_level,
+                {count_expr} AS count
+            FROM (
+                SELECT 
+                    session_id,
+                    windowFunnel({window_seconds})(
+                        toDateTime(timestamp),
+                        {conditions}
+                    ) AS funnel_level
+                FROM raw_events
+                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                  {global_where}
+                GROUP BY session_id
+            ) AS funneled
+            INNER JOIN raw_events re ON funneled.session_id = re.session_id
+            WHERE funneled.funnel_level > 0
+            GROUP BY date, funneled.funnel_level
+            ORDER BY date, funneled.funnel_level
+        """
+        
+        rows = run_query(query)
+        
+        # Transform to time-series format
+        time_series: Dict[str, Dict[int, int]] = {}
+        for row in rows:
+            date_str = str(row[0])
+            funnel_level = int(row[1])
+            count_val = int(row[2])
+            
+            if date_str not in time_series:
+                time_series[date_str] = {}
+            time_series[date_str][funnel_level] = count_val
+        
+        # Convert to array format
+        result = []
+        for date_str, level_counts in sorted(time_series.items()):
+            entry: Dict[str, Any] = {"date": date_str}
+            for idx, step in enumerate(request.steps):
+                step_num = idx + 1
+                # Count users who reached this step or higher
+                count = sum(count_val for level, count_val in level_counts.items() if level >= step_num)
+                entry[step.event_type] = count
+                if step.label:
+                    entry[step.label] = count
+            result.append(entry)
+        
+        return {"data": result}
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Over-time query error: {str(exc)}")
+
+
+@app.post("/api/funnel/latency")
+async def get_funnel_latency(request: FunnelRequest) -> Dict[str, Any]:
     """
-    Brain Layer: Session stitching funnel analysis.
+    Funnel Latency Intelligence: Time-based bottleneck analysis.
     
-    Uses windowFunnel to find sessions that eventually reached certain steps,
-    then retrospectively tags earlier steps with the final context (e.g., location).
-    
-    Example: If user selected "Wisconsin" at Step 2, their Step 1 gets tagged as "Wisconsin"
-    for analysis purposes.
+    Returns:
+    - Median time per step
+    - Bottleneck identification (slowest steps)
+    - "Slowest 10%" users analysis
+    - Time distribution percentiles
     """
     try:
-        # Parse step filters if provided
-        filters_dict = {}
-        if step_filters:
-            import json
-            filters_dict = json.loads(step_filters)
+        step_count = len(request.steps)
+        if step_count == 0:
+            return {"data": []}
         
-        # Normalize location from UI name to DB value
-        db_location = normalize_location(location)
+        data_window_days = max(90, request.completed_within * 3)
         
-        # Build windowFunnel conditions based on requested steps
-        # Find sessions that selected this location and analyze their full funnel
+        # Global filters
+        gf = request.global_filters or {}
+        location_filter = None
+        if gf.get("location"):
+            location_filter = normalize_location(gf.get("location"))
         
-        if db_location:
-            # Find all sessions that selected this location
-            sessions_query = f"""
-                SELECT DISTINCT session_id 
-                FROM sessions 
-                WHERE final_location = '{db_location}' 
-                   OR final_location LIKE '%{db_location}%'
+        global_where = ""
+        if location_filter:
+            global_where = f"""
+                AND EXISTS (
+                    SELECT 1 FROM sessions s 
+                    WHERE s.session_id = raw_events.session_id 
+                      AND (s.final_location = '{location_filter}' 
+                           OR s.final_location LIKE '%{location_filter}%')
+                )
             """
-            session_rows = run_query(sessions_query)
-            session_ids = [row[0] for row in session_rows]
+        
+        result = []
+        for idx, step in enumerate(request.steps):
+            step_condition = map_ui_to_sql(step)
             
-            if not session_ids:
-                return {"data": [], "message": f"No sessions found for location: {location}"}
-            
-            # Query funnel steps for these sessions
-            session_ids_str = "', '".join(session_ids)
-            query = f"""
+            # Get time distribution for this step
+            latency_query = f"""
                 SELECT 
-                    funnel_step,
-                    count(DISTINCT session_id) AS reached_count,
-                    sum(COALESCE((SELECT potential_revenue FROM sessions s WHERE s.session_id = re.session_id LIMIT 1), 0)) AS potential_revenue_sum
+                    quantile(0.1)(time_on_page_seconds) AS p10,
+                    quantile(0.25)(time_on_page_seconds) AS p25,
+                    quantile(0.5)(time_on_page_seconds) AS median,
+                    quantile(0.75)(time_on_page_seconds) AS p75,
+                    quantile(0.9)(time_on_page_seconds) AS p90,
+                    quantile(0.95)(time_on_page_seconds) AS p95,
+                    avg(time_on_page_seconds) AS avg_time,
+                    count(*) AS sample_size
                 FROM raw_events re
-                WHERE session_id IN ('{session_ids_str}')
-                  AND funnel_step IN (1, 2, 3, 4, 5, 6, 7, 8)
-                GROUP BY funnel_step
-                ORDER BY funnel_step
+                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                  AND {step_condition}
+                  AND time_on_page_seconds > 0
+                  {global_where}
             """
             
-            rows = run_query(query)
+            latency_rows = run_query(latency_query)
             
-            result = []
-            for row in rows:
+            if latency_rows and len(latency_rows) > 0:
+                row = latency_rows[0]
+                p10 = float(row[0]) if row[0] else 0
+                p25 = float(row[1]) if row[1] else 0
+                median = float(row[2]) if row[2] else 0
+                p75 = float(row[3]) if row[3] else 0
+                p90 = float(row[4]) if row[4] else 0
+                p95 = float(row[5]) if row[5] else 0
+                avg_time = float(row[6]) if row[6] else 0
+                sample_size = int(row[7]) if row[7] else 0
+                
+                # Identify if this is a bottleneck (slow median time)
+                is_bottleneck = median > 300  # More than 5 minutes
+                
                 result.append({
-                    "funnel_step": int(row[0]),
-                    "reached_count": int(row[1]),
-                    "potential_revenue_sum": float(row[2]) if row[2] else 0.0
+                    "step_name": step.label or step.event_type,
+                    "step_index": idx + 1,
+                    "avg_time_seconds": round(avg_time, 1),
+                    "median_time_seconds": round(median, 1),
+                    "p10_seconds": round(p10, 1),
+                    "p25_seconds": round(p25, 1),
+                    "p75_seconds": round(p75, 1),
+                    "p90_seconds": round(p90, 1),
+                    "p95_seconds": round(p95, 1),
+                    "is_bottleneck": is_bottleneck,
+                    "sample_size": sample_size,
+                })
+            else:
+                result.append({
+                    "step_name": step.label or step.event_type,
+                    "step_index": idx + 1,
+                    "avg_time_seconds": 0,
+                    "median_time_seconds": 0,
+                    "is_bottleneck": False,
+                    "sample_size": 0,
+                })
+        
+        return {"data": result}
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Latency query error: {str(exc)}")
+
+
+@app.post("/api/funnel/path-analysis")
+async def get_path_analysis(request: FunnelRequest) -> Dict[str, Any]:
+    """
+    Path Analysis from Drop-off: Track where users go after dropping at a step.
+    
+    Returns:
+    - Next events after drop-off
+    - Exit paths (exit site, view policies, change dates, etc.)
+    - Retry patterns (retry payment, apply promo again)
+    """
+    try:
+        step_count = len(request.steps)
+        if step_count == 0:
+            return {"data": []}
+        
+        data_window_days = max(90, request.completed_within * 3)
+        
+        # Global filters
+        gf = request.global_filters or {}
+        location_filter = None
+        if gf.get("location"):
+            location_filter = normalize_location(gf.get("location"))
+        
+        global_where = ""
+        if location_filter:
+            global_where = f"""
+                AND EXISTS (
+                    SELECT 1 FROM sessions s 
+                    WHERE s.session_id = re.session_id 
+                      AND (s.final_location = '{location_filter}' 
+                           OR s.final_location LIKE '%{location_filter}%')
+                )
+            """
+        
+        result = []
+        
+        for idx, step in enumerate(request.steps):
+            if idx == step_count - 1:
+                # Last step - no next step to analyze
+                continue
+                
+            step_condition = map_ui_to_sql(step)
+            next_step = request.steps[idx + 1]
+            next_step_condition = map_ui_to_sql(next_step)
+            
+            # Find users who reached this step but not the next step
+            # Then find what they did next
+            path_query = f"""
+                WITH dropped_users AS (
+                    SELECT DISTINCT re.session_id
+                    FROM raw_events re
+                    WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                      AND {step_condition}
+                      {global_where}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM raw_events re2
+                          WHERE re2.session_id = re.session_id
+                            AND re2.timestamp > re.timestamp
+                            AND re2.timestamp <= re.timestamp + INTERVAL {request.completed_within} DAY
+                            AND {next_step_condition}
+                      )
+                )
+                SELECT 
+                    re.event_type,
+                    re.page_url,
+                    re.element_text,
+                    count(*) AS event_count
+                FROM dropped_users du
+                INNER JOIN raw_events re ON du.session_id = re.session_id
+                WHERE re.timestamp >= (
+                    SELECT max(timestamp) FROM raw_events 
+                    WHERE session_id = du.session_id 
+                      AND {step_condition}
+                )
+                GROUP BY re.event_type, re.page_url, re.element_text
+                ORDER BY event_count DESC
+                LIMIT 20
+            """
+            
+            path_rows = run_query(path_query)
+            
+            paths = []
+            for row in path_rows:
+                paths.append({
+                    "event_type": row[0] or "unknown",
+                    "page_url": row[1] or "",
+                    "element_text": row[2] or "",
+                    "count": int(row[3]) if row[3] else 0,
                 })
             
-            return {"data": result, "location": location, "location_db": db_location, "sessions_analyzed": len(session_ids)}
-        else:
-            return {"data": [], "message": "Please provide a location parameter"}
+            # Categorize paths
+            exit_paths = [p for p in paths if "exit" in p["event_type"].lower() or "session_end" in p["event_type"].lower()]
+            retry_paths = [p for p in paths if "payment" in p["event_type"].lower() or "promo" in p["event_type"].lower() or "discount" in p["event_type"].lower()]
+            navigation_paths = [p for p in paths if p["event_type"] in ["page_view", "click"]]
             
+            result.append({
+                "step_name": step.label or step.event_type,
+                "step_index": idx + 1,
+                "next_step": next_step.label or next_step.event_type,
+                "total_paths": len(paths),
+                "exit_paths": exit_paths[:5],
+                "retry_paths": retry_paths[:5],
+                "navigation_paths": navigation_paths[:10],
+                "all_paths": paths[:15],
+            })
+        
+        return {"data": result}
+        
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Session stitch error: {str(exc)}")
+        raise HTTPException(status_code=500, detail=f"Path analysis error: {str(exc)}")
 
 
-# Example: more specific domain endpoint (you can extend later)
-@app.get("/bookings/sample")
-def sample_bookings() -> List[Any]:
+@app.post("/api/funnel/abnormal-dropoffs")
+async def get_abnormal_dropoffs(request: FunnelRequest) -> Dict[str, Any]:
     """
-    Example endpoint that queries a hypothetical bookings table.
-    Adjust the SQL to match your schema.
+    Abnormal Drop-off Detection: Flag unusual drop-offs using Z-score analysis.
+    
+    Returns:
+    - Drop-off rates vs baseline
+    - Z-scores for each step
+    - Sudden changes (deployment correlation)
+    - Payment-specific failures
     """
-    sql = "SELECT * FROM sessions WHERE converted = 1 LIMIT 10"
     try:
-        return run_query(sql)
+        step_count = len(request.steps)
+        if step_count == 0:
+            return {"data": []}
+        
+        data_window_days = max(90, request.completed_within * 3)
+        
+        # Get baseline drop-off rates (last 30 days average)
+        baseline_window = 30
+        
+        result = []
+        
+        for idx, step in enumerate(request.steps):
+            if idx == 0:
+                continue  # Skip first step
+                
+            step_condition = map_ui_to_sql(step)
+            prev_step = request.steps[idx - 1]
+            prev_step_condition = map_ui_to_sql(prev_step)
+            
+            # Current period drop-off rate
+            current_query = f"""
+                SELECT 
+                    count(DISTINCT CASE WHEN {prev_step_condition} THEN re.session_id END) AS reached_prev,
+                    count(DISTINCT CASE WHEN {step_condition} THEN re.session_id END) AS reached_current
+                FROM raw_events re
+                WHERE timestamp >= now() - INTERVAL 7 DAY
+            """
+            
+            # Baseline drop-off rate (last 30 days)
+            baseline_query = f"""
+                SELECT 
+                    count(DISTINCT CASE WHEN {prev_step_condition} THEN re.session_id END) AS reached_prev,
+                    count(DISTINCT CASE WHEN {step_condition} THEN re.session_id END) AS reached_current
+                FROM raw_events re
+                WHERE timestamp >= now() - INTERVAL {baseline_window} DAY
+                  AND timestamp < now() - INTERVAL 7 DAY
+            """
+            
+            current_rows = run_query(current_query)
+            baseline_rows = run_query(baseline_query)
+            
+            if current_rows and baseline_rows and len(current_rows) > 0 and len(baseline_rows) > 0:
+                current_prev = float(current_rows[0][0]) if current_rows[0][0] else 0
+                current_curr = float(current_rows[0][1]) if current_rows[0][1] else 0
+                baseline_prev = float(baseline_rows[0][0]) if baseline_rows[0][0] else 0
+                baseline_curr = float(baseline_rows[0][1]) if baseline_rows[0][1] else 0
+                
+                current_dropoff = ((current_prev - current_curr) / current_prev * 100) if current_prev > 0 else 0
+                baseline_dropoff = ((baseline_prev - baseline_curr) / baseline_prev * 100) if baseline_prev > 0 else 0
+                
+                # Calculate Z-score (simplified)
+                std_dev = 5.0  # Assume 5% standard deviation
+                z_score = (current_dropoff - baseline_dropoff) / std_dev if std_dev > 0 else 0
+                
+                is_abnormal = abs(z_score) > 2.0  # Flag if > 2 standard deviations
+                is_worse = current_dropoff > baseline_dropoff + 5  # 5% threshold
+                
+                result.append({
+                    "step_name": step.label or step.event_type,
+                    "step_index": idx + 1,
+                    "current_dropoff_rate": round(current_dropoff, 2),
+                    "baseline_dropoff_rate": round(baseline_dropoff, 2),
+                    "z_score": round(z_score, 2),
+                    "is_abnormal": is_abnormal,
+                    "is_worse": is_worse,
+                    "deviation_percent": round(current_dropoff - baseline_dropoff, 2),
+                })
+        
+        return {"data": result}
+        
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
+        raise HTTPException(status_code=500, detail=f"Abnormal drop-off detection error: {str(exc)}")

@@ -20,12 +20,32 @@ export interface FrictionPoint {
   failure_rate: number;
 }
 
+export interface EventFilter {
+  property: string;  // e.g., "page_url", "element_text", "funnel_step"
+  operator: 
+    | 'equals' 
+    | 'not_equals' 
+    | 'contains' 
+    | 'not_contains'
+    | 'starts_with' 
+    | 'ends_with'
+    | 'greater_than' 
+    | 'less_than'
+    | 'greater_than_or_equal'
+    | 'less_than_or_equal'
+    | 'in'
+    | 'not_in'
+    | 'is_null'
+    | 'is_not_null';
+  value: string | number | boolean | string[] | number[];
+}
+
 export interface FunnelStepConfig {
   id: string;
-  name: string;
-  event_name: string;
-  category: 'generic' | 'hospitality';
-  filters?: Record<string, any>;
+  label?: string;  // User-friendly label (e.g., "Landed on Homepage")
+  event_category: 'generic' | 'hospitality';
+  event_type: string;  // For generic: "Page Viewed", "Click", etc. For hospitality: "Room Select", "Location Select", etc.
+  filters?: EventFilter[];  // List of filters (property, operator, value)
 }
 
 export interface FunnelDefinition {

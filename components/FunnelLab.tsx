@@ -40,10 +40,13 @@ import {
   UserCircle,
   MousePointerClick,
   FileText,
-  Eye
+  Eye,
+  Download,
+  Save,
+  Share2
 } from 'lucide-react';
-import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint } from '../types';
-import { fetchFunnelData, fetchFrictionData, fetchOverTimeData } from '../services/funnelService';
+import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFilter } from '../types';
+import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema } from '../services/funnelService';
 
 interface FunnelLabProps {
   onExplain: (title: string, data: any) => void;
@@ -70,12 +73,12 @@ const HOSPITALITY_MILESTONES = [
 ];
 
 const DEFAULT_STEPS: FunnelStepConfig[] = [
-  { id: '1', name: 'Landed', event_name: 'landed', category: 'hospitality' },
-  { id: '2', name: 'Location Select', event_name: 'location_select', category: 'hospitality' },
-  { id: '3', name: 'Date Select', event_name: 'date_select', category: 'hospitality' },
-  { id: '4', name: 'Room Select', event_name: 'room_select', category: 'hospitality' },
-  { id: '5', name: 'Payment', event_name: 'payment', category: 'hospitality' },
-  { id: '6', name: 'Confirmation', event_name: 'confirmation', category: 'hospitality' },
+  { id: '1', label: 'Landed', event_category: 'hospitality', event_type: 'Landed' },
+  { id: '2', label: 'Location Select', event_category: 'hospitality', event_type: 'Location Select' },
+  { id: '3', label: 'Date Select', event_category: 'hospitality', event_type: 'Date Select' },
+  { id: '4', label: 'Room Select', event_category: 'hospitality', event_type: 'Room Select' },
+  { id: '5', label: 'Payment', event_category: 'hospitality', event_type: 'Payment' },
+  { id: '6', label: 'Confirmation', event_category: 'hospitality', event_type: 'Confirmation' },
 ];
 
 const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
@@ -99,6 +102,34 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   const [frictionData, setFrictionData] = useState<Record<string, FrictionPoint[]>>({});
   const [hoveredStep, setHoveredStep] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'conversion' | 'overTime' | 'timeToConvert'>('conversion');
+  
+  // Event schema from backend
+  const [eventSchema, setEventSchema] = useState<any>(null);
+  const [availableLocations, setAvailableLocations] = useState<string[]>([]);
+  const API_BASE = 'http://localhost:8000';
+
+  // Fetch event schema on mount
+  useEffect(() => {
+    const loadSchema = async () => {
+      const schema = await fetchEventSchema();
+      setEventSchema(schema);
+    };
+    loadSchema();
+    
+    // Load available locations
+    const loadLocations = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/funnel/locations`);
+        if (response.ok) {
+          const locations = await response.json();
+          setAvailableLocations(locations);
+        }
+      } catch (error) {
+        console.error('Error loading locations:', error);
+      }
+    };
+    loadLocations();
+  }, []);
 
   // Fetch funnel data when config changes
   useEffect(() => {
@@ -113,8 +144,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
         setOverTimeData(timeSeriesData);
         
         // Load friction data for each step
-        const frictionPromises = funnelData.map(step => 
-          fetchFrictionData(step.event_name).then(result => ({
+        const frictionPromises = funnelData.map((step, idx) => 
+          fetchFrictionData(step.event_name || step.name || config.steps[idx]?.event_type || `step_${idx + 1}`).then(result => ({
             stepId: step.id,
             friction: result.friction_points || []
           }))
@@ -132,22 +163,55 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
       }
     };
 
-    loadData();
+    if (config.steps.length > 0) {
+      loadData();
+    }
   }, [config]);
 
-  const handleAddStep = (event: typeof GENERIC_EVENTS[0] | typeof HOSPITALITY_MILESTONES[0]) => {
+  const handleAddStep = (eventType: string, category: 'generic' | 'hospitality') => {
     const newStep: FunnelStepConfig = {
       id: Date.now().toString(),
-      name: event.name,
-      event_name: event.event_name,
-      category: event.category,
-      filters: {}
+      label: eventType,
+      event_category: category,
+      event_type: eventType,
+      filters: []
     };
     setConfig(prev => ({
       ...prev,
       steps: [...prev.steps, newStep]
     }));
     setShowAddStepModal(false);
+  };
+
+  const handleAddFilter = (stepId: string, filter: EventFilter) => {
+    setConfig(prev => ({
+      ...prev,
+      steps: prev.steps.map(step => 
+        step.id === stepId 
+          ? { ...step, filters: [...(step.filters || []), filter] }
+          : step
+      )
+    }));
+  };
+
+  const handleRemoveFilter = (stepId: string, filterIndex: number) => {
+    setConfig(prev => ({
+      ...prev,
+      steps: prev.steps.map(step => 
+        step.id === stepId 
+          ? { ...step, filters: step.filters?.filter((_, idx) => idx !== filterIndex) || [] }
+          : step
+      )
+    }));
+  };
+
+  const handleUpdateStepLabel = (stepId: string, label: string) => {
+    setConfig(prev => ({
+      ...prev,
+      steps: prev.steps.map(step => 
+        step.id === stepId ? { ...step, label } : step
+      )
+    }));
   };
 
   const handleRemoveStep = (id: string) => {
@@ -166,12 +230,44 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     }));
   };
 
+  const handleUpdateViewType = (viewType: 'conversion' | 'overTime' | 'timeToConvert' | 'frequency' | 'improvement' | 'significance') => {
+    setConfig(prev => ({ ...prev, view_type: viewType }));
+    // Auto-switch to Over Time tab when view_type is overTime
+    if (viewType === 'overTime') {
+      setActiveTab('overTime');
+    } else if (viewType === 'timeToConvert') {
+      setActiveTab('timeToConvert');
+    } else {
+      setActiveTab('conversion');
+    }
+  };
+
+  const handleUpdateCompletedWithin = (days: number) => {
+    setConfig(prev => ({ ...prev, completed_within: days }));
+  };
+
+  const handleUpdateCountingBy = (countingBy: 'unique_users' | 'sessions' | 'events') => {
+    setConfig(prev => ({ ...prev, counting_by: countingBy }));
+  };
+
+  // Legacy support
   const handleUpdateMeasure = (measure: 'guests' | 'revenue' | 'intent') => {
-    setConfig(prev => ({ ...prev, measure }));
+    const countingMap: Record<string, 'unique_users' | 'sessions' | 'events'> = {
+      'guests': 'unique_users',
+      'revenue': 'sessions',
+      'intent': 'unique_users'
+    };
+    setConfig(prev => ({ ...prev, counting_by: countingMap[measure] || 'unique_users' }));
   };
 
   const handleUpdateWindow = (window: '1hr' | '24hr' | '7 Days' | '30 Days') => {
-    setConfig(prev => ({ ...prev, window }));
+    const daysMap: Record<string, number> = {
+      '1hr': 0,
+      '24hr': 1,
+      '7 Days': 7,
+      '30 Days': 30
+    };
+    setConfig(prev => ({ ...prev, completed_within: daysMap[window] || 1 }));
   };
 
   const handleUpdateGroupBy = (group_by: 'device_type' | 'guest_segment' | 'traffic_source' | null) => {
@@ -260,10 +356,9 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                 onChange={(e) => handleUpdateLocationFilter(e.target.value)}
               >
                 <option value="All Locations">All Locations</option>
-                <option value="Wisconsin">Wisconsin</option>
-                <option value="Pocono">Pocono</option>
-                <option value="Sandusky">Sandusky</option>
-                <option value="Round Rock">Round Rock</option>
+                {availableLocations.map(loc => (
+                  <option key={loc} value={loc}>{loc}</option>
+                ))}
               </select>
             </div>
           </div>
@@ -292,9 +387,22 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-mono text-slate-400 w-4">{idx + 1}</span>
-                        <span className="font-medium text-sm text-slate-700">{step.name}</span>
-                        {step.category === 'hospitality' && (
+                        {editingStepId === step.id ? (
+                          <input
+                            type="text"
+                            value={step.label || step.event_type}
+                            onChange={(e) => handleUpdateStepLabel(step.id, e.target.value)}
+                            className="flex-1 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-0.5"
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="font-medium text-sm text-slate-700">{step.label || step.event_type}</span>
+                        )}
+                        {step.event_category === 'hospitality' && (
                           <span className="text-[10px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded">H</span>
+                        )}
+                        {step.event_category === 'generic' && (
+                          <span className="text-[10px] px-1.5 py-0.5 bg-green-50 text-green-600 rounded">G</span>
                         )}
                       </div>
                       <button 
@@ -305,38 +413,42 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                       </button>
                     </div>
                     
-                    {/* Step Filters (when editing) */}
+                    {/* Step Filters */}
+                    {step.filters && step.filters.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-slate-100">
+                        <div className="flex flex-wrap gap-1">
+                          {step.filters.map((filter, filterIdx) => (
+                            <span
+                              key={filterIdx}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-200 rounded text-[10px] text-slate-600"
+                            >
+                              {filter.property} {filter.operator} {String(filter.value)}
+                              {editingStepId === step.id && (
+                                <button
+                                  onClick={() => handleRemoveFilter(step.id, filterIdx)}
+                                  className="text-red-500 hover:text-red-700"
+                                >
+                                  <X size={10} />
+                                </button>
+                              )}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Filter Builder (when editing) */}
                     {editingStepId === step.id && (
                       <div className="mt-2 pt-2 border-t border-slate-100 space-y-2">
-                        {step.event_name === 'room_select' && (
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-slate-500">Room Type</label>
-                            <select 
-                              className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-1"
-                              onChange={(e) => handleUpdateStepFilters(step.id, { room_type: e.target.value })}
-                            >
-                              <option value="">All</option>
-                              <option value="villa">Villa</option>
-                              <option value="suite">Suite</option>
-                            </select>
-                          </div>
-                        )}
-                        {step.event_name === 'payment' && (
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-slate-500">Promo Code Used</label>
-                            <select 
-                              className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-1"
-                              onChange={(e) => handleUpdateStepFilters(step.id, { promo_code_used: e.target.value === 'true' })}
-                            >
-                              <option value="">All</option>
-                              <option value="true">Yes</option>
-                              <option value="false">No</option>
-                            </select>
-                          </div>
-                        )}
+                        <div className="text-[10px] font-semibold text-slate-500 uppercase mb-1">Add Filter</div>
+                        <FilterBuilder
+                          step={step}
+                          eventSchema={eventSchema}
+                          onAddFilter={(filter) => handleAddFilter(step.id, filter)}
+                        />
                         <button
                           onClick={() => setEditingStepId(null)}
-                          className="text-xs text-slate-500 hover:text-slate-700"
+                          className="w-full text-xs px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 transition-colors"
                         >
                           Done
                         </button>
@@ -475,13 +587,65 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
             )}
           </div>
           
-          <button 
-            onClick={() => onExplain('Funnel Explorer Analysis', { config, data })}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-sm font-medium hover:bg-indigo-100 hover:border-indigo-200 transition-all"
-          >
-            <Sparkles size={16} />
-            AI Insights
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                // Export to CSV
+                const csv = [
+                  ['Step', 'Visitors', 'Conversion Rate', 'Drop Off Rate', 'Revenue at Risk'].join(','),
+                  ...data.map(step => [
+                    step.name,
+                    step.visitors,
+                    `${step.conversionRate}%`,
+                    `${step.dropOffRate}%`,
+                    `$${step.revenueAtRisk.toFixed(2)}`
+                  ].join(','))
+                ].join('\n');
+                
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `funnel-export-${new Date().toISOString().split('T')[0]}.csv`;
+                a.click();
+                window.URL.revokeObjectURL(url);
+              }}
+              className="flex items-center gap-2 px-3 py-2 bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-100 transition-all"
+              title="Export to CSV"
+            >
+              <Download size={16} />
+              Export
+            </button>
+            
+            <button
+              onClick={() => {
+                // Save funnel configuration
+                const saved = localStorage.getItem('savedFunnels') || '[]';
+                const funnels = JSON.parse(saved);
+                funnels.push({
+                  id: Date.now().toString(),
+                  name: `Funnel ${funnels.length + 1}`,
+                  config,
+                  createdAt: new Date().toISOString()
+                });
+                localStorage.setItem('savedFunnels', JSON.stringify(funnels));
+                alert('Funnel saved!');
+              }}
+              className="flex items-center gap-2 px-3 py-2 bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-100 transition-all"
+              title="Save Funnel"
+            >
+              <Save size={16} />
+              Save
+            </button>
+            
+            <button 
+              onClick={() => onExplain('Funnel Explorer Analysis', { config, data })}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-sm font-medium hover:bg-indigo-100 hover:border-indigo-200 transition-all"
+            >
+              <Sparkles size={16} />
+              AI Insights
+            </button>
+          </div>
         </div>
 
         {/* Summary Metrics */}
@@ -588,10 +752,12 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={overTimeData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                       <defs>
-                        <linearGradient id="colorVisitors" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                        </linearGradient>
+                        {config.steps.map((step, idx) => (
+                          <linearGradient key={step.id} id={`color-${step.id}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'} stopOpacity={0.3}/>
+                            <stop offset="95%" stopColor={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'} stopOpacity={0}/>
+                          </linearGradient>
+                        ))}
                       </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis 
@@ -615,18 +781,21 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                           return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                         }}
                       />
-                      {config.steps.map((step, idx) => (
-                        <Area
-                          key={step.id}
-                          type="monotone"
-                          dataKey={step.name}
-                          stackId="1"
-                          stroke={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'}
-                          fill={idx === config.steps.length - 1 ? 'url(#colorVisitors)' : 'url(#colorVisitors)'}
-                          strokeWidth={2}
-                          animationDuration={800}
-                        />
-                      ))}
+                      {config.steps.map((step, idx) => {
+                        const stepKey = step.label || step.event_type || `step_${idx + 1}`;
+                        return (
+                          <Area
+                            key={step.id}
+                            type="monotone"
+                            dataKey={stepKey}
+                            stackId="1"
+                            stroke={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'}
+                            fill={`url(#color-${step.id})`}
+                            strokeWidth={2}
+                            animationDuration={800}
+                          />
+                        );
+                      })}
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : (
@@ -767,34 +936,238 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
 
               {/* Event List */}
               <div className="grid grid-cols-1 gap-2">
-                {(selectedEventCategory === 'hospitality' ? HOSPITALITY_MILESTONES : GENERIC_EVENTS).map((event) => {
-                  const Icon = event.icon;
-                  return (
+                {eventSchema ? (
+                  (selectedEventCategory === 'hospitality' 
+                    ? eventSchema.hospitality_events || []
+                    : eventSchema.generic_events || []
+                  ).map((event: any) => (
                     <button
-                      key={event.event_name}
-                      onClick={() => handleAddStep(event)}
+                      key={event.name || event.event_type}
+                      onClick={() => handleAddStep(event.name || event.event_type, selectedEventCategory)}
                       className="text-left p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
                     >
                       <div className="flex items-center gap-3">
                         <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-brand-100">
-                          <Icon size={20} className="text-slate-600 group-hover:text-brand-600" />
+                          {selectedEventCategory === 'hospitality' ? (
+                            <Target size={20} className="text-slate-600 group-hover:text-brand-600" />
+                          ) : (
+                            <MousePointerClick size={20} className="text-slate-600 group-hover:text-brand-600" />
+                          )}
                         </div>
                         <div className="flex-1">
                           <div className="font-medium text-slate-800">{event.name}</div>
-                          {'description' in event && (
-                            <div className="text-xs text-slate-500 mt-0.5">{event.description}</div>
+                          {event.properties && (
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              {event.properties.length} filterable properties
+                            </div>
                           )}
                         </div>
                         <ArrowRight size={16} className="text-slate-300 group-hover:text-brand-500" />
                       </div>
                     </button>
-                  );
-                })}
+                  ))
+                ) : (
+                  <div className="text-center py-8 text-slate-400">
+                    <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 border-t-brand-500 mx-auto mb-2"></div>
+                    <p className="text-sm">Loading event types...</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// Filter Builder Component
+interface FilterBuilderProps {
+  step: FunnelStepConfig;
+  eventSchema: any;
+  onAddFilter: (filter: EventFilter) => void;
+}
+
+const FilterBuilder: React.FC<FilterBuilderProps> = ({ step, eventSchema, onAddFilter }) => {
+  const [selectedProperty, setSelectedProperty] = React.useState('');
+  const [selectedOperator, setSelectedOperator] = React.useState<string>('equals');
+  const [filterValue, setFilterValue] = React.useState('');
+
+  // Get ALL available properties (not just event-specific ones) - Amplitude style
+  const availableProperties = React.useMemo(() => {
+    if (!eventSchema) return [];
+    // Show all properties from the schema, organized by category
+    return eventSchema.all_properties || [];
+  }, [eventSchema]);
+
+  // Get property type to determine available operators
+  const selectedPropertyType = React.useMemo(() => {
+    if (!selectedProperty) return null;
+    const prop = availableProperties.find((p: any) => (p.property || p.field) === selectedProperty);
+    return prop?.type || 'string';
+  }, [selectedProperty, availableProperties]);
+
+  // Get available operators based on property type
+  const availableOperators = React.useMemo(() => {
+    if (!selectedPropertyType) return [];
+    
+    const operators: { value: string; label: string }[] = [];
+    
+    if (selectedPropertyType === 'boolean') {
+      operators.push(
+        { value: 'equals', label: 'is' },
+        { value: 'not_equals', label: 'is not' }
+      );
+    } else if (selectedPropertyType === 'number') {
+      operators.push(
+        { value: 'equals', label: '=' },
+        { value: 'not_equals', label: '≠' },
+        { value: 'greater_than', label: '>' },
+        { value: 'greater_than_or_equal', label: '≥' },
+        { value: 'less_than', label: '<' },
+        { value: 'less_than_or_equal', label: '≤' },
+        { value: 'in', label: 'in' },
+        { value: 'not_in', label: 'not in' }
+      );
+    } else if (selectedPropertyType === 'date') {
+      operators.push(
+        { value: 'equals', label: 'is' },
+        { value: 'not_equals', label: 'is not' },
+        { value: 'greater_than', label: 'after' },
+        { value: 'less_than', label: 'before' }
+      );
+    } else {
+      // String type
+      operators.push(
+        { value: 'equals', label: 'is' },
+        { value: 'not_equals', label: 'is not' },
+        { value: 'contains', label: 'contains' },
+        { value: 'not_contains', label: 'does not contain' },
+        { value: 'starts_with', label: 'starts with' },
+        { value: 'ends_with', label: 'ends with' },
+        { value: 'in', label: 'is one of' },
+        { value: 'not_in', label: 'is not one of' }
+      );
+    }
+    
+    // Add null checks for all types
+    operators.push(
+      { value: 'is_null', label: 'is empty' },
+      { value: 'is_not_null', label: 'is not empty' }
+    );
+    
+    return operators;
+  }, [selectedPropertyType]);
+
+  // Update operator when property changes
+  React.useEffect(() => {
+    if (availableOperators.length > 0 && !availableOperators.find(op => op.value === selectedOperator)) {
+      setSelectedOperator(availableOperators[0].value);
+    }
+  }, [availableOperators, selectedOperator]);
+
+  const handleAdd = () => {
+    if (!selectedProperty) return;
+    
+    // For null checks, value is not required
+    if (selectedOperator !== 'is_null' && selectedOperator !== 'is_not_null' && !filterValue) {
+      return;
+    }
+    
+    // Parse value based on type
+    let parsedValue: any = filterValue;
+    if (selectedPropertyType === 'number') {
+      parsedValue = filterValue.includes(',') 
+        ? filterValue.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
+        : parseFloat(filterValue);
+    } else if (selectedPropertyType === 'boolean') {
+      parsedValue = filterValue.toLowerCase() === 'true' || filterValue === '1';
+    }
+    
+    onAddFilter({
+      property: selectedProperty,
+      operator: selectedOperator,
+      value: parsedValue || filterValue
+    });
+    
+    // Reset form
+    setSelectedProperty('');
+    setFilterValue('');
+    setSelectedOperator('equals');
+  };
+
+  // Group properties by category
+  const groupedProperties = React.useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    availableProperties.forEach((prop: any) => {
+      const category = prop.category || 'Other';
+      if (!groups[category]) groups[category] = [];
+      groups[category].push(prop);
+    });
+    return groups;
+  }, [availableProperties]);
+
+  const isNullOperator = selectedOperator === 'is_null' || selectedOperator === 'is_not_null';
+
+  return (
+    <div className="space-y-2 p-2 bg-slate-50 rounded border border-slate-200">
+      <div className="grid grid-cols-3 gap-2">
+        <select
+          value={selectedProperty}
+          onChange={(e) => {
+            setSelectedProperty(e.target.value);
+            setFilterValue(''); // Reset value when property changes
+          }}
+          className="text-xs bg-white border border-slate-200 rounded p-1.5"
+        >
+          <option value="">Select Property</option>
+          {Object.entries(groupedProperties).map(([category, props]) => (
+            <optgroup key={category} label={category}>
+              {props.map((prop: any) => (
+                <option key={prop.property || prop.field} value={prop.property || prop.field}>
+                  {prop.label || prop.property || prop.field}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        
+        <select
+          value={selectedOperator}
+          onChange={(e) => setSelectedOperator(e.target.value)}
+          className="text-xs bg-white border border-slate-200 rounded p-1.5"
+          disabled={!selectedProperty}
+        >
+          {availableOperators.map((op) => (
+            <option key={op.value} value={op.value}>
+              {op.label}
+            </option>
+          ))}
+        </select>
+        
+        <input
+          type={selectedPropertyType === 'number' ? 'number' : selectedPropertyType === 'date' ? 'date' : 'text'}
+          value={filterValue}
+          onChange={(e) => setFilterValue(e.target.value)}
+          placeholder={
+            isNullOperator 
+              ? 'No value needed' 
+              : selectedOperator === 'in' || selectedOperator === 'not_in'
+              ? 'Comma-separated values'
+              : 'Value'
+          }
+          className="text-xs bg-white border border-slate-200 rounded p-1.5"
+          disabled={isNullOperator}
+          onKeyPress={(e) => e.key === 'Enter' && !isNullOperator && handleAdd()}
+        />
+      </div>
+      <button
+        onClick={handleAdd}
+        disabled={!selectedProperty || (!isNullOperator && !filterValue)}
+        className="w-full text-xs px-2 py-1 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        + Add Filter
+      </button>
     </div>
   );
 };

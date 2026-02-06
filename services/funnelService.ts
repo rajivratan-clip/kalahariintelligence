@@ -1,10 +1,26 @@
-import { FunnelDefinition, FunnelStep } from '../types';
+import { FunnelDefinition, FunnelStep, EventFilter } from '../types';
 import { generateRealisticFunnelData, generateFrictionData } from './mockDataGenerator';
 
 const API_BASE = 'http://localhost:8000';
 
 // Set to false to use real ClickHouse data, true for mock demo data
 const USE_MOCK_DATA = false; // Changed to false to use your real ClickHouse data
+
+// Fetch event schema from backend
+export const fetchEventSchema = async () => {
+  try {
+    const response = await fetch(`${API_BASE}/api/metadata/schema`);
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching event schema:', error);
+    return {
+      generic_events: [],
+      hospitality_events: [],
+      all_properties: []
+    };
+  }
+};
 
 export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelStep[]> => {
   // For demo MVP, always use realistic mock data
@@ -22,8 +38,10 @@ export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelS
       },
       body: JSON.stringify({
         steps: config.steps.map(step => ({
-          event_name: step.event_name,
-          filters: step.filters || {}
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
         })),
         view_type: config.view_type,
         completed_within: config.completed_within,
@@ -46,13 +64,13 @@ export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelS
     // Transform API response to FunnelStep format
     return result.data.map((item: any, idx: number) => ({
       id: config.steps[idx]?.id || idx.toString(),
-      name: item.step_name,
-      event_name: config.steps[idx]?.event_name || item.step_name,
-      visitors: item.visitors,
-      conversionRate: item.conversion_rate,
-      dropOffRate: item.drop_off_rate,
-      revenueAtRisk: item.revenue_at_risk,
-      avgTime: `${Math.floor(Math.random() * 5) + 2}m ${Math.floor(Math.random() * 60)}s`,
+      name: item.step_name || item.label || item.event_type || config.steps[idx]?.label || config.steps[idx]?.event_type || `Step ${idx + 1}`,
+      event_name: item.event_type || config.steps[idx]?.event_type || item.step_name || `step_${idx + 1}`,
+      visitors: item.visitors || 0,
+      conversionRate: item.conversion_rate || 0,
+      dropOffRate: item.drop_off_rate || 0,
+      revenueAtRisk: item.revenue_at_risk || 0,
+      avgTime: item.avg_time || `${Math.floor(Math.random() * 5) + 2}m ${Math.floor(Math.random() * 60)}s`, // Use real data from API
       sparkline: Array.from({ length: 7 }, () => Math.random() * 20 + 40)
     }));
   } catch (error) {
@@ -90,19 +108,39 @@ export const fetchOverTimeData = async (config: FunnelDefinition): Promise<any[]
   if (USE_MOCK_DATA) {
     await new Promise(resolve => setTimeout(resolve, 200 + Math.random() * 150));
     const { generateOverTimeData } = await import('./mockDataGenerator');
-    return generateOverTimeData(config, 30);
+    return generateOverTimeData(config, config.completed_within || 30);
   }
 
-  // TODO: Implement real API endpoint for over-time data from ClickHouse
-  // For now, fallback to mock if real endpoint not available
   try {
-    // Future: Query ClickHouse for time-series data
-    // const response = await fetch(`${API_BASE}/api/funnel/over-time`, {...});
-    return [];
+    const response = await fetch(`${API_BASE}/api/funnel/over-time`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        view_type: config.view_type,
+        completed_within: config.completed_within,
+        counting_by: config.counting_by,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    return result.data || [];
   } catch (error) {
     console.warn('Over-time data not available, using mock fallback');
     const { generateOverTimeData } = await import('./mockDataGenerator');
-    return generateOverTimeData(config, 30);
+    return generateOverTimeData(config, config.completed_within || 30);
   }
 };
 
