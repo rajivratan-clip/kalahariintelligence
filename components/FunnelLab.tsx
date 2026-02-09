@@ -46,7 +46,7 @@ import {
   Share2
 } from 'lucide-react';
 import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFilter } from '../types';
-import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema } from '../services/funnelService';
+import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema, fetchPathAnalysis, fetchLatencyData, fetchAbnormalDropoffs, fetchPriceSensitivity, fetchCohortAnalysis, fetchExecutiveSummary } from '../services/funnelService';
 
 interface FunnelLabProps {
   onExplain: (title: string, data: any) => void;
@@ -101,7 +101,15 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [frictionData, setFrictionData] = useState<Record<string, FrictionPoint[]>>({});
   const [hoveredStep, setHoveredStep] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'conversion' | 'overTime' | 'timeToConvert'>('conversion');
+  const [activeTab, setActiveTab] = useState<'conversion' | 'overTime' | 'timeToConvert' | 'pathAnalysis' | 'priceSensitivity' | 'cohortAnalysis' | 'executive'>('conversion');
+  
+  // Advanced analytics data
+  const [pathAnalysisData, setPathAnalysisData] = useState<any[]>([]);
+  const [latencyData, setLatencyData] = useState<any[]>([]);
+  const [abnormalDropoffsData, setAbnormalDropoffsData] = useState<any[]>([]);
+  const [priceSensitivityData, setPriceSensitivityData] = useState<any[]>([]);
+  const [cohortAnalysisData, setCohortAnalysisData] = useState<any[]>([]);
+  const [executiveSummary, setExecutiveSummary] = useState<any>(null);
   
   // Event schema from backend
   const [eventSchema, setEventSchema] = useState<any>(null);
@@ -136,12 +144,24 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     const loadData = async () => {
       setIsLoading(true);
       try {
-        const [funnelData, timeSeriesData] = await Promise.all([
+        const [funnelData, timeSeriesData, pathData, latency, abnormal, price, cohort, executive] = await Promise.all([
           fetchFunnelData(config),
-          fetchOverTimeData(config)
+          fetchOverTimeData(config),
+          fetchPathAnalysis(config),
+          fetchLatencyData(config),
+          fetchAbnormalDropoffs(config),
+          fetchPriceSensitivity(config),
+          fetchCohortAnalysis(config),
+          fetchExecutiveSummary(config.global_filters?.location, 30)
         ]);
         setData(funnelData);
         setOverTimeData(timeSeriesData);
+        setPathAnalysisData(pathData);
+        setLatencyData(latency);
+        setAbnormalDropoffsData(abnormal);
+        setPriceSensitivityData(price);
+        setCohortAnalysisData(cohort);
+        setExecutiveSummary(executive);
         
         // Load friction data for each step
         const frictionPromises = funnelData.map((step, idx) => 
@@ -154,7 +174,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
         const frictionMap: Record<string, FrictionPoint[]> = {};
         frictionResults.forEach(({ stepId, friction }) => {
           frictionMap[stepId] = friction;
-        });
+      });
         setFrictionData(frictionMap);
       } catch (error) {
         console.error('Error loading funnel data:', error);
@@ -176,8 +196,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
       event_type: eventType,
       filters: []
     };
-    setConfig(prev => ({
-      ...prev,
+         setConfig(prev => ({
+             ...prev,
       steps: [...prev.steps, newStep]
     }));
     setShowAddStepModal(false);
@@ -202,7 +222,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
           ? { ...step, filters: step.filters?.filter((_, idx) => idx !== filterIndex) || [] }
           : step
       )
-    }));
+         }));
   };
 
   const handleUpdateStepLabel = (stepId: string, label: string) => {
@@ -295,13 +315,13 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
           <p className="font-bold mb-2 text-base">{d.name}</p>
           <div className="space-y-1.5">
             <div className="flex justify-between items-center">
-              <span className="text-slate-400">Visitors:</span>
+             <span className="text-slate-400">Visitors:</span>
               <span className="font-mono font-semibold">{d.visitors.toLocaleString()}</span>
-            </div>
+          </div>
             <div className="flex justify-between items-center text-red-400">
-              <span>Drop-off:</span>
+             <span>Drop-off:</span>
               <span className="font-mono font-semibold">{d.dropOffRate}%</span>
-            </div>
+          </div>
             {d.revenueAtRisk > 0 && (
               <div className="flex justify-between items-center text-orange-300 border-t border-slate-700 pt-1.5 mt-1.5">
                 <span>Revenue at Risk:</span>
@@ -363,16 +383,16 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
             </div>
           </div>
         </div>
-
+            
         {/* Step List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <div className="flex justify-between items-center mb-2">
-            <h3 className="text-sm font-bold text-slate-800">Funnel Steps</h3>
-            <span className="text-xs text-slate-400">{config.steps.length} Steps</span>
-          </div>
-          
-          <div className="space-y-2">
-            {config.steps.map((step, idx) => (
+                    <h3 className="text-sm font-bold text-slate-800">Funnel Steps</h3>
+                    <span className="text-xs text-slate-400">{config.steps.length} Steps</span>
+                </div>
+                
+                <div className="space-y-2">
+                    {config.steps.map((step, idx) => (
               <div 
                 key={step.id} 
                 className="group relative bg-white border border-slate-200 rounded-lg p-3 hover:border-brand-400 hover:shadow-md transition-all"
@@ -409,9 +429,9 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                         onClick={() => handleRemoveStep(step.id)}
                         className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-500 transition-opacity"
                       >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
+                                        <Trash2 size={12} />
+                                    </button>
+                                </div>
                     
                     {/* Step Filters */}
                     {step.filters && step.filters.length > 0 && (
@@ -434,8 +454,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                             </span>
                           ))}
                         </div>
-                      </div>
-                    )}
+                                    </div>
+                                )}
                     
                     {/* Filter Builder (when editing) */}
                     {editingStepId === step.id && (
@@ -452,7 +472,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                         >
                           Done
                         </button>
-                      </div>
+                            </div>
                     )}
                     
                     {/* Friction Warning */}
@@ -474,16 +494,16 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                     <Settings size={12} />
                   </button>
                 )}
-              </div>
-            ))}
+                        </div>
+                    ))}
             
-            <button 
+                    <button 
               onClick={() => setShowAddStepModal(true)}
               className="w-full py-2.5 border-2 border-dashed border-slate-300 rounded-lg text-sm text-slate-500 hover:text-brand-600 hover:border-brand-400 flex items-center justify-center gap-2 transition-all"
-            >
+                    >
               <Plus size={16} /> Add Step
-            </button>
-          </div>
+                    </button>
+            </div>
 
           {/* Group By Section */}
           <div className="pt-4 border-t border-slate-200 mt-4">
@@ -502,8 +522,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                   {option.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
                 </button>
               ))}
-            </div>
-          </div>
+                        </div>
+                     </div>
 
           {/* Measured As - Amplitude Style */}
           <div className="pt-4 border-t border-slate-200">
@@ -540,35 +560,35 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">
                 Completed within
               </label>
-              <select
+                    <select 
                 value={config.completed_within}
                 onChange={(e) => handleUpdateCompletedWithin(Number(e.target.value))}
-                className="w-full text-sm bg-slate-50 border border-slate-200 rounded p-1.5 outline-none focus:border-brand-500"
+                        className="w-full text-sm bg-slate-50 border border-slate-200 rounded p-1.5 outline-none focus:border-brand-500"
               >
                 <option value={0}>Same session</option>
                 <option value={1}>1 day</option>
                 <option value={7}>7 days</option>
                 <option value={30}>30 days</option>
                 <option value={90}>90 days</option>
-              </select>
-            </div>
+                    </select>
+                </div>
 
             {/* Counting By */}
-            <div>
+                <div>
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">
                 Counting by
               </label>
-              <select
+                        <select 
                 value={config.counting_by}
                 onChange={(e) => handleUpdateCountingBy(e.target.value as any)}
                 className="w-full text-sm bg-slate-50 border border-slate-200 rounded p-1.5 outline-none focus:border-brand-500"
-              >
+                        >
                 <option value="unique_users">Unique User(s)</option>
                 <option value="sessions">Session(s)</option>
                 <option value="events">Event(s)</option>
-              </select>
-            </div>
-          </div>
+                        </select>
+                </div>
+             </div>
         </div>
       </div>
 
@@ -588,7 +608,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
           </div>
           
           <div className="flex items-center gap-2">
-            <button
+                <button 
               onClick={() => {
                 // Export to CSV
                 const csv = [
@@ -615,9 +635,9 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
             >
               <Download size={16} />
               Export
-            </button>
+                </button>
             
-            <button
+                <button 
               onClick={() => {
                 // Save funnel configuration
                 const saved = localStorage.getItem('savedFunnels') || '[]';
@@ -636,10 +656,52 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
             >
               <Save size={16} />
               Save
-            </button>
+                </button>
             
             <button 
-              onClick={() => onExplain('Funnel Explorer Analysis', { config, data })}
+              onClick={() => onExplain('Funnel Explorer Analysis', {
+                // Funnel configuration
+                config: {
+                  steps: config.steps.map(s => ({
+                    label: s.label,
+                    event_type: s.event_type,
+                    filters: s.filters
+                  })),
+                  completed_within: config.completed_within,
+                  global_filters: config.global_filters,
+                  group_by: config.group_by
+                },
+                // Conversion data with actual numbers
+                funnel_conversion: data.map((step, idx) => {
+                  const prevVisitors = idx > 0 ? data[idx - 1].visitors : step.visitors;
+                  return {
+                    step_name: step.name,
+                    step_index: idx + 1,
+                    visitors: step.visitors,
+                    conversion_rate: prevVisitors > 0 ? ((step.visitors / prevVisitors) * 100) : 100,
+                    drop_off_count: idx > 0 ? Math.max(0, prevVisitors - step.visitors) : 0,
+                    drop_off_rate: idx > 0 ? Math.max(0, ((prevVisitors - step.visitors) / prevVisitors) * 100) : 0
+                  };
+                }),
+                // Additional analytics
+                friction_data: frictionData,
+                over_time_data: overTimeData,
+                path_analysis: pathAnalysisData,
+                latency_data: latencyData,
+                abnormal_dropoffs: abnormalDropoffsData,
+                price_sensitivity: priceSensitivityData,
+                cohort_analysis: cohortAnalysisData,
+                executive_summary: executiveSummary,
+                // Summary metrics
+                summary: {
+                  total_visitors: data[0]?.visitors || 0,
+                  final_conversions: data[data.length - 1]?.visitors || 0,
+                  overall_conversion_rate: data[0]?.visitors > 0 
+                    ? ((data[data.length - 1]?.visitors / data[0]?.visitors) * 100).toFixed(1)
+                    : 0,
+                  total_dropped: data[0]?.visitors - (data[data.length - 1]?.visitors || 0)
+                }
+              })}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-sm font-medium hover:bg-indigo-100 hover:border-indigo-200 transition-all"
             >
               <Sparkles size={16} />
@@ -648,33 +710,42 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
           </div>
         </div>
 
-        {/* Summary Metrics */}
+            {/* Summary Metrics */}
         <div className="p-6 pb-4">
           <div className="grid grid-cols-4 gap-4">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="text-slate-500 text-xs font-medium uppercase mb-1">Total Conversion</div>
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Total Conversion</div>
               <div className="text-2xl font-bold text-slate-800">{totalConversion}%</div>
-              <div className="text-xs text-green-600 mt-1 flex items-center">
+                    <div className="text-xs text-green-600 mt-1 flex items-center">
                 <TrendingUp size={12} className="mr-1" /> +2.4% vs last {config.window}
-              </div>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="text-slate-500 text-xs font-medium uppercase mb-1">Dropped Off</div>
+                    </div>
+                </div>
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Dropped Off</div>
               <div className="text-2xl font-bold text-slate-800">{totalDropped}</div>
-              <div className="text-xs text-slate-400 mt-1">Guests lost</div>
-            </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="text-slate-500 text-xs font-medium uppercase mb-1">Revenue at Risk</div>
+                    <div className="text-xs text-slate-400 mt-1">Guests lost</div>
+                </div>
+                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Revenue at Risk</div>
               <div className="text-2xl font-bold text-red-600">${(totalRevenueAtRisk / 1000).toFixed(1)}k</div>
-              <div className="text-xs text-red-500 mt-1 font-medium">High Alert</div>
+                    <div className="text-xs text-red-500 mt-1 font-medium">High Alert</div>
+                </div>
+                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Avg Time to Convert</div>
+                    <div className="text-2xl font-bold text-slate-800">
+                      {(() => {
+                        // Use the LAST step's cumulative time (time from start to final conversion)
+                        const lastStep = latencyData[latencyData.length - 1];
+                        const totalSeconds = lastStep?.median_time_seconds || 0;
+                        const minutes = Math.floor(totalSeconds / 60);
+                        const seconds = Math.floor(totalSeconds % 60);
+                        return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
+                      })()}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1">Median duration</div>
             </div>
-            <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-              <div className="text-slate-500 text-xs font-medium uppercase mb-1">Avg Time to Convert</div>
-              <div className="text-2xl font-bold text-slate-800">14m 20s</div>
-              <div className="text-xs text-slate-400 mt-1">Median duration</div>
+                </div>
             </div>
-          </div>
-        </div>
 
         {/* Chart Tabs */}
         <div className="px-6 pt-2 border-b border-slate-200 bg-white">
@@ -709,47 +780,254 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
             >
               Time to Convert
             </button>
+            <button
+              onClick={() => setActiveTab('pathAnalysis')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'pathAnalysis'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Path Analysis
+            </button>
+            <button
+              onClick={() => setActiveTab('priceSensitivity')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'priceSensitivity'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Price Sensitivity
+            </button>
+            <button
+              onClick={() => setActiveTab('cohortAnalysis')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'cohortAnalysis'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Cohort Analysis
+            </button>
+            <button
+              onClick={() => setActiveTab('executive')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'executive'
+                  ? 'border-brand-500 text-brand-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Executive Summary
+            </button>
           </div>
         </div>
 
         {/* Main Chart */}
         <div className="flex-1 p-6 pt-0 overflow-y-auto">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 min-h-[500px]">
-            {activeTab === 'conversion' && (
-              <div className="h-[500px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart 
-                    data={data} 
-                    layout="vertical" 
-                    margin={{ top: 20, right: 30, left: 120, bottom: 5 }}
-                    barCategoryGap={30}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                    <XAxis type="number" hide />
-                    <YAxis 
-                      dataKey="name" 
-                      type="category" 
-                      width={110} 
-                      tick={{fontSize: 12, fill: '#475569'}} 
+                {activeTab === 'conversion' && (
+              <div className="h-[700px] w-full">
+                         <ResponsiveContainer width="100%" height="100%">
+                            <BarChart 
+                                data={data.map((step, idx) => {
+                                  // Ensure conversionRate + dropOffRate = 100 for proper stacking
+                                  const convRate = step.conversionRate || 0;
+                                  const dropRate = idx === 0 ? 0 : (100 - convRate);
+                                  return {
+                                    ...step,
+                                    conversionRate: convRate,
+                                    dropOffRate: dropRate
+                                  };
+                                })}
+                    margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
+                    barCategoryGap="30%"
+                            >
+                                <defs>
+                                  {/* Diagonal stripe pattern for drop-offs */}
+                                  <pattern id="diagonalStripes" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
+                                    <line x1="0" y1="0" x2="0" y2="8" stroke="#93c5fd" strokeWidth="4" />
+                                  </pattern>
+                                  <pattern id="diagonalStripesGreen" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
+                                    <line x1="0" y1="0" x2="0" y2="8" stroke="#86efac" strokeWidth="4" />
+                                  </pattern>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                                <XAxis 
+                      dataKey="name"
+                      tick={(props) => {
+                        const { x, y, payload } = props;
+                        const words = payload.value.split(' ');
+                        return (
+                          <g transform={`translate(${x},${y})`}>
+                            {words.map((word: string, i: number) => (
+                              <text
+                                key={i}
+                                x={0}
+                                y={i * 16}
+                                dy={12}
+                                textAnchor="middle"
+                                fill="#475569"
+                                fontSize={12}
+                                fontWeight={500}
+                              >
+                                {word}
+                              </text>
+                            ))}
+                          </g>
+                        );
+                      }}
+                      height={100}
+                      interval={0}
                     />
-                    <Tooltip cursor={{fill: '#f1f5f9'}} content={<CustomTooltip />} />
-                    <Bar dataKey="visitors" radius={[0, 6, 6, 0]} barSize={50} animationDuration={800}>
-                      {data.map((entry, index) => (
+                    <YAxis 
+                      domain={[0, 100]}
+                      tick={{fontSize: 12, fill: '#475569'}}
+                      tickFormatter={(value) => `${value}%`}
+                      label={{ value: 'Users (%)', angle: -90, position: 'insideLeft', style: { fontSize: 13, fill: '#475569', fontWeight: 500 } }}
+                    />
+                                <Tooltip 
+                      cursor={{fill: 'transparent'}} 
+                      shared={false}
+                      content={({ active, payload }) => {
+                        if (active && payload && payload.length > 0) {
+                          // Get the hovered bar segment
+                          const hoveredSegment = payload.find(p => p.value && p.value > 0);
+                          if (!hoveredSegment) return null;
+                          
+                          const stepData = hoveredSegment.payload;
+                          const dataKey = hoveredSegment.dataKey;
+                          
+                          // Find the actual step index in original data
+                          const stepIndex = data.findIndex(d => d.id === stepData.id);
+                          if (stepIndex === -1) return null;
+                          
+                          const actualStep = data[stepIndex];
+                          
+                          // Check which segment is hovered
+                          if (dataKey === 'conversionRate') {
+                            // For first step, all visitors converted to this step
+                            // For other steps, calculate based on step's visitors
+                            const convertedVisitors = actualStep.visitors;
+                            
+                            return (
+                              <div className="bg-white border-2 border-blue-600 rounded-lg shadow-xl p-4">
+                                <p className="font-semibold text-slate-800 mb-3">{actualStep.name}</p>
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-blue-600 rounded border-2 border-blue-800"></div>
+                                    <span className="text-slate-700 font-medium">Reached This Step</span>
+                                  </div>
+                                  <div className="ml-6 space-y-1 text-sm">
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-600">Conversion Rate:</span>
+                                      <span className="font-semibold text-blue-700">{actualStep.conversionRate.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-600">Visitors:</span>
+                                      <span className="font-semibold text-blue-700">{convertedVisitors.toLocaleString()}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          } else if (dataKey === 'dropOffRate') {
+                            // Calculate dropped visitors from previous step
+                            let droppedVisitors = 0;
+                            let dropRate = 0;
+                            
+                            if (stepIndex > 0) {
+                              const previousStepVisitors = data[stepIndex - 1].visitors;
+                              const currentStepVisitors = actualStep.visitors;
+                              droppedVisitors = previousStepVisitors - currentStepVisitors;
+                              dropRate = ((droppedVisitors / previousStepVisitors) * 100);
+                            }
+                            
+                            return (
+                              <div className="bg-white border-2 border-red-400 rounded-lg shadow-xl p-4">
+                                <p className="font-semibold text-slate-800 mb-3">{actualStep.name}</p>
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-red-200 rounded border-2 border-red-400"></div>
+                                    <span className="text-slate-700 font-medium">Dropped Off</span>
+                                  </div>
+                                  <div className="ml-6 space-y-1 text-sm">
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-600">Drop-off Rate:</span>
+                                      <span className="font-semibold text-red-600">{dropRate.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-600">Dropped Visitors:</span>
+                                      <span className="font-semibold text-red-600">{droppedVisitors.toLocaleString()}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+                        }
+                        return null;
+                      }}
+                    />
+                    {/* Converted portion - solid blue */}
+                    <Bar 
+                      dataKey="conversionRate" 
+                      stackId="a" 
+                      radius={[0, 0, 0, 0]} 
+                      maxBarSize={90} 
+                      animationDuration={800}
+                      className="cursor-pointer hover:opacity-90 transition-opacity"
+                    >
+                                    {data.map((entry, index) => (
                         <Cell 
                           key={`cell-${index}`} 
-                          fill={index === data.length - 1 ? '#10b981' : '#3b82f6'} 
+                          fill={index === data.length - 1 ? '#10b981' : '#2563eb'}
+                          stroke={index === data.length - 1 ? '#10b981' : '#2563eb'}
+                          strokeWidth={1.5}
                         />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
+                                    ))}
+                                </Bar>
+                    {/* Drop-off portion - striped light blue */}
+                    <Bar 
+                      dataKey="dropOffRate" 
+                      stackId="a" 
+                      radius={[4, 4, 0, 0]} 
+                      maxBarSize={90} 
+                      animationDuration={800}
+                      className="cursor-pointer hover:opacity-90 transition-opacity"
+                    >
+                                    {data.map((entry, index) => (
+                        <Cell 
+                          key={`cell-drop-${index}`} 
+                          fill={index === data.length - 1 ? 'url(#diagonalStripesGreen)' : 'url(#diagonalStripes)'}
+                          stroke={index === data.length - 1 ? '#10b981' : '#2563eb'}
+                          strokeWidth={1.5}
+                        />
+                                    ))}
+                                </Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                        
+                        {/* Legend */}
+                        <div className="flex items-center justify-center gap-6 -mt-8 mb-6 text-sm">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-4 bg-blue-600 border-2 border-blue-600 rounded"></div>
+                            <span className="text-slate-700 font-medium">Converted</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-4 bg-blue-200 border-2 border-blue-300 rounded" style={{
+                              backgroundImage: 'repeating-linear-gradient(45deg, #93c5fd 0, #93c5fd 2px, #dbeafe 2px, #dbeafe 4px)'
+                            }}></div>
+                            <span className="text-slate-700 font-medium">Dropped Off</span>
+                          </div>
+                        </div>
+                    </div>
+                )}
 
-            {activeTab === 'overTime' && (
+                 {activeTab === 'overTime' && (
               <div className="h-[500px] w-full">
                 {overTimeData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
+                         <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={overTimeData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                       <defs>
                         {config.steps.map((step, idx) => (
@@ -759,7 +1037,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                           </linearGradient>
                         ))}
                       </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis 
                         dataKey="date" 
                         tick={{fontSize: 11, fill: '#64748b'}}
@@ -796,30 +1074,285 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                           />
                         );
                       })}
-                    </AreaChart>
-                  </ResponsiveContainer>
+                            </AreaChart>
+                         </ResponsiveContainer>
                 ) : (
                   <div className="h-full flex items-center justify-center text-slate-400">
                     <div className="text-center">
                       <Clock size={48} className="mx-auto mb-4 opacity-50" />
                       <p>Loading time-series data...</p>
                     </div>
-                  </div>
+                    </div>
                 )}
               </div>
             )}
 
-            {activeTab === 'timeToConvert' && (
-              <div className="h-[500px] w-full flex items-center justify-center">
-                <div className="text-center text-slate-400">
-                  <Clock size={48} className="mx-auto mb-4 opacity-50" />
-                  <p className="text-lg font-medium mb-2">Time Distribution</p>
-                  <p className="text-sm">Median: 14m 20s | P95: 45m 12s</p>
-                  <div className="mt-6 space-y-2 text-left max-w-md mx-auto">
-                    {data.map((step, idx) => (
-                      <div key={step.id} className="flex items-center justify-between p-2 bg-slate-50 rounded">
-                        <span className="text-sm text-slate-600">{step.name}</span>
-                        <span className="text-sm font-mono text-slate-800">{step.avgTime}</span>
+                {activeTab === 'timeToConvert' && (
+              <div className="h-[600px] p-6">
+                <div className="mb-6">
+                  <h3 className="text-lg font-semibold text-slate-800 mb-2">Time to Convert</h3>
+                  <p className="text-sm text-slate-500">How long it takes users to reach each step from session start</p>
+                </div>
+
+                {latencyData.length > 0 && latencyData.some(s => s.median_time_seconds > 0) ? (
+                  <>
+                    {/* Summary Stats */}
+                    <div className="grid grid-cols-2 gap-4 mb-6">
+                      <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                        <div className="text-xs text-slate-500 uppercase font-medium mb-1">Median Time to Complete</div>
+                        <div className="text-2xl font-bold text-slate-800">
+                          {(() => {
+                            const lastStep = latencyData[latencyData.length - 1];
+                            const totalSeconds = lastStep?.median_time_seconds || 0;
+                            const minutes = Math.floor(totalSeconds / 60);
+                            const seconds = Math.floor(totalSeconds % 60);
+                            return `${minutes}m ${seconds}s`;
+                          })()}
+                        </div>
+                      </div>
+                      <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                        <div className="text-xs text-slate-500 uppercase font-medium mb-1">P95 Time to Complete</div>
+                        <div className="text-2xl font-bold text-slate-800">
+                          {(() => {
+                            const lastStep = latencyData[latencyData.length - 1];
+                            const totalSeconds = lastStep?.p95_seconds || 0;
+                            const minutes = Math.floor(totalSeconds / 60);
+                            const seconds = Math.floor(totalSeconds % 60);
+                            return `${minutes}m ${seconds}s`;
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Cumulative Time Breakdown */}
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-semibold text-slate-700 mb-3">Cumulative Time to Reach Each Step</h4>
+                      {latencyData.map((step, idx) => {
+                        const minutes = Math.floor(step.median_time_seconds / 60);
+                        const seconds = Math.floor(step.median_time_seconds % 60);
+                        const p95Minutes = Math.floor((step.p95_seconds || 0) / 60);
+                        const p95Seconds = Math.floor((step.p95_seconds || 0) % 60);
+                        
+                        return (
+                          <div key={idx} className="bg-white border border-slate-200 rounded-lg p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-slate-700">{step.step_name}</div>
+                                {step.is_bottleneck && (
+                                  <div className="flex items-center gap-1 px-2 py-0.5 bg-red-50 text-red-600 rounded text-xs font-medium">
+                                    <AlertTriangle size={12} />
+                                    Slow
+                                  </div>
+                                )}
+                              </div>
+                              <div className="text-lg font-mono font-bold text-slate-800">
+                                {minutes}m {seconds}s
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-slate-500">
+                              <span>From session start</span>
+                              <span>P95: {p95Minutes}m {p95Seconds}s</span>
+                            </div>
+                            {step.sample_size > 0 && (
+                              <div className="mt-2 text-xs text-slate-400">
+                                Based on {step.sample_size.toLocaleString()} sessions
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Insights */}
+                    {latencyData.some(s => s.is_bottleneck) && (
+                      <div className="mt-6 bg-amber-50 border border-amber-200 rounded-lg p-4">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle size={16} className="text-amber-600 mt-0.5" />
+                          <div>
+                            <div className="text-sm font-semibold text-amber-900 mb-1">Bottleneck Detected</div>
+                            <div className="text-xs text-amber-700">
+                              {latencyData.filter(s => s.is_bottleneck).map(s => s.step_name).join(', ')} taking 
+                              longer than 5 minutes. Consider simplifying the UI or reducing required fields.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex items-center justify-center h-[400px]">
+                    <div className="text-center text-slate-400">
+                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">
+                        {data.length > 0 ? 'Calculating time metrics...' : 'Configure funnel to see time data'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+                )}
+
+            {activeTab === 'pathAnalysis' && (
+              <div className="p-6 space-y-4">
+                <h3 className="text-lg font-semibold text-slate-800 mb-4">Where Users Go After Dropping</h3>
+                {pathAnalysisData.map((analysis, idx) => (
+                  <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-medium text-slate-700">{analysis.step_name} → {analysis.next_step}</h4>
+                      <span className="text-xs text-slate-500">{analysis.total_paths} paths tracked</span>
+            </div>
+                    {analysis.exit_paths && analysis.exit_paths.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-xs font-semibold text-red-600 uppercase mb-2">Exit Paths</div>
+                        <div className="space-y-1">
+                          {analysis.exit_paths.slice(0, 3).map((path: any, pidx: number) => (
+                            <div key={pidx} className="flex items-center justify-between text-sm text-slate-600 bg-red-50 p-2 rounded">
+                              <span>{path.event_type}</span>
+                              <span className="font-mono">{path.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {analysis.retry_paths && analysis.retry_paths.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-xs font-semibold text-blue-600 uppercase mb-2">Retry Paths</div>
+                        <div className="space-y-1">
+                          {analysis.retry_paths.slice(0, 3).map((path: any, pidx: number) => (
+                            <div key={pidx} className="flex items-center justify-between text-sm text-slate-600 bg-blue-50 p-2 rounded">
+                              <span>{path.event_type}</span>
+                              <span className="font-mono">{path.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {analysis.navigation_paths && analysis.navigation_paths.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase mb-2">Navigation</div>
+                        <div className="space-y-1">
+                          {analysis.navigation_paths.slice(0, 5).map((path: any, pidx: number) => (
+                            <div key={pidx} className="flex items-center justify-between text-sm text-slate-600 bg-slate-50 p-2 rounded">
+                              <span className="truncate">{path.page_url || path.event_type}</span>
+                              <span className="font-mono">{path.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === 'priceSensitivity' && (
+              <div className="p-6 space-y-4">
+                <h3 className="text-lg font-semibold text-slate-800 mb-4">Price Changes Through Funnel</h3>
+                {priceSensitivityData.map((step, idx) => (
+                  <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-medium text-slate-700">{step.step_name}</h4>
+                      {step.has_price_increase && (
+                        <span className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded">Price Increase Alert</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-sm">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Avg Price</div>
+                        <div className="font-semibold text-slate-800">${step.avg_price?.toFixed(2) || '0.00'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Median Price</div>
+                        <div className="font-semibold text-slate-800">${step.median_price?.toFixed(2) || '0.00'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Price Change</div>
+                        <div className={`font-semibold ${step.price_change_percent > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {step.price_change_percent > 0 ? '+' : ''}{step.price_change_percent?.toFixed(1) || '0.0'}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === 'cohortAnalysis' && (
+              <div className="p-6 space-y-4">
+                <h3 className="text-lg font-semibold text-slate-800 mb-4">Cohort Recovery Analysis</h3>
+                {cohortAnalysisData.map((cohort, idx) => (
+                  <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
+                    <h4 className="font-medium text-slate-700 mb-3">{cohort.step_name}</h4>
+                    <div className="grid grid-cols-2 gap-4 mb-3">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Total Dropped</div>
+                        <div className="text-lg font-semibold text-slate-800">{cohort.total_dropped?.toLocaleString() || 0}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Recovered</div>
+                        <div className="text-lg font-semibold text-green-600">{cohort.recovered?.toLocaleString() || 0}</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Recovery Rate</div>
+                        <div className="text-lg font-semibold text-blue-600">{cohort.recovery_rate?.toFixed(1) || '0.0'}%</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500 mb-1">Avg Days to Rebook</div>
+                        <div className="text-lg font-semibold text-slate-800">{cohort.avg_days_to_rebook?.toFixed(1) || '0.0'} days</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-slate-200">
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">First-Time Visitors</div>
+                          <div className="font-semibold text-slate-800">{cohort.first_time_count?.toLocaleString() || 0}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-slate-500 mb-1">Returning Guests</div>
+                          <div className="font-semibold text-slate-800">{cohort.returning_count?.toLocaleString() || 0}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeTab === 'executive' && executiveSummary && (
+              <div className="p-6 space-y-6">
+                <div className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-lg p-6">
+                  <h3 className="text-xl font-bold text-red-800 mb-2">Total Revenue Lost</h3>
+                  <div className="text-4xl font-bold text-red-600 mb-1">
+                    ${(executiveSummary.total_revenue_lost / 1000).toFixed(1)}k
+                  </div>
+                  <div className="text-sm text-red-700">Last {executiveSummary.period_days} days • {executiveSummary.location}</div>
+                </div>
+                
+                <div>
+                  <h4 className="text-lg font-semibold text-slate-800 mb-4">Top 3 Funnel Leaks</h4>
+                  <div className="space-y-3">
+                    {executiveSummary.top_3_leaks?.map((leak: any, idx: number) => (
+                      <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-medium text-slate-700">Step {leak.step}</span>
+                          <span className="text-sm font-semibold text-red-600">{leak.dropoff_rate?.toFixed(1)}% drop-off</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-4 text-sm">
+                          <div>
+                            <div className="text-xs text-slate-500 mb-1">Reached</div>
+                            <div className="font-semibold text-slate-800">{leak.reached?.toLocaleString() || 0}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500 mb-1">Dropped</div>
+                            <div className="font-semibold text-red-600">{leak.dropped?.toLocaleString() || 0}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-slate-500 mb-1">Revenue Lost</div>
+                            <div className="font-semibold text-red-600">${(leak.revenue_lost / 1000).toFixed(1)}k</div>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -827,76 +1360,75 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
               </div>
             )}
 
-            {/* Revenue at Risk Tags */}
-            <div className="mt-4 space-y-2">
-              {data.map((step, idx) => {
-                if (idx === 0 || step.revenueAtRisk < 1000) return null;
-                return (
-                  <div key={step.id} className="flex items-center justify-between p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      <AlertTriangle size={16} className="text-red-600" />
-                      <span className="text-sm font-medium text-red-800">{step.name}</span>
-                    </div>
-                    <span className="text-sm font-bold text-red-600">
-                      -${(step.revenueAtRisk / 1000).toFixed(1)}k Risk
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-
             {/* Detailed Table */}
             <div className="mt-6 border-t border-slate-200 pt-6">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50 text-xs font-semibold text-slate-500 uppercase border-b border-slate-200">
-                  <tr>
-                    <th className="p-4">Step Name</th>
-                    <th className="p-4">Visitors</th>
-                    <th className="p-4">Conversion</th>
-                    <th className="p-4">Drop-off</th>
+                <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50 text-xs font-semibold text-slate-500 uppercase border-b border-slate-200">
+                        <tr>
+                            <th className="p-4">Step Name</th>
+                            <th className="p-4">Visitors</th>
+                            <th className="p-4">Conversion</th>
+                            <th className="p-4">Drop-off</th>
                     <th className="p-4">Revenue at Risk</th>
-                    <th className="p-4">Top Friction</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-sm">
-                  {data.map((row, idx) => (
-                    <tr key={row.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="p-4 font-medium text-slate-700">
-                        <span className="text-slate-400 mr-2">{idx + 1}.</span>
-                        {row.name}
-                      </td>
-                      <td className="p-4 text-slate-600">{row.visitors.toLocaleString()}</td>
-                      <td className="p-4 text-slate-600">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                            <div className="h-full bg-brand-500" style={{ width: `${row.conversionRate}%` }}></div>
-                          </div>
-                          {row.conversionRate}%
-                        </div>
-                      </td>
-                      <td className="p-4 text-red-500 font-medium">
-                        {idx > 0 && `-${row.dropOffRate}%`}
-                      </td>
+                            <th className="p-4">Top Friction</th>
+                    <th className="p-4 text-right">AI</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                        {data.map((row, idx) => (
+                            <tr key={row.id} className="hover:bg-slate-50 transition-colors">
+                                <td className="p-4 font-medium text-slate-700">
+                                    <span className="text-slate-400 mr-2">{idx + 1}.</span>
+                                    {row.name}
+                                </td>
+                                <td className="p-4 text-slate-600">{row.visitors.toLocaleString()}</td>
+                                <td className="p-4 text-slate-600">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                            <div className="h-full bg-brand-500" style={{ width: `${row.conversionRate}%` }}></div>
+                                        </div>
+                                        {row.conversionRate}%
+                                    </div>
+                                </td>
+                                <td className="p-4 text-red-500 font-medium">
+                                    {idx > 0 && `-${row.dropOffRate}%`}
+                                </td>
                       <td className="p-4 text-red-600 font-medium">
                         ${(row.revenueAtRisk / 1000).toFixed(1)}k
                       </td>
-                      <td className="p-4">
+                                <td className="p-4">
                         {frictionData[row.id] && frictionData[row.id].length > 0 ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-red-50 text-red-600 border border-red-100">
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-red-50 text-red-600 border border-red-100">
                             <AlertTriangle size={10} /> {frictionData[row.id][0].element} ({frictionData[row.id][0].failure_rate}%)
-                          </span>
+                                        </span>
                         ) : (
                           <span className="text-slate-400 text-xs">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                                    )}
+                                </td>
+                      <td className="p-4 text-right">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onExplain(`Step Forensics: ${row.name}`, {
+                              step: row,
+                              friction: frictionData[row.id] || [],
+                              pathAnalysis: pathAnalysisData.find((p: any) => p.step_name === row.name) || null,
+                            })
+                          }
+                          className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-600 transition-colors"
+                        >
+                          <Sparkles size={12} className="mr-1" />
+                          AI
+                        </button>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
             </div>
           </div>
         </div>
-      </div>
+            </div>
 
       {/* Add Step Modal */}
       {showAddStepModal && (
@@ -907,7 +1439,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
               <button onClick={() => setShowAddStepModal(false)} className="text-slate-400 hover:text-slate-600">
                 <X size={20} />
               </button>
-            </div>
+        </div>
             
             <div className="flex-1 overflow-y-auto p-6">
               {/* Category Tabs */}
@@ -932,7 +1464,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                 >
                   Generic Events
                 </button>
-              </div>
+      </div>
 
               {/* Event List */}
               <div className="grid grid-cols-1 gap-2">

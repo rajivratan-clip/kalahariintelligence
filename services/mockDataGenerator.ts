@@ -185,7 +185,6 @@ export const generateOverTimeData = (
 ): Array<{date: string; [stepName: string]: number | string}> => {
   const baseData = generateRealisticFunnelData(config);
   const dates: string[] = [];
-  
   // Generate dates for last N days
   for (let i = days - 1; i >= 0; i--) {
     const date = new Date();

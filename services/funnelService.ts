@@ -144,3 +144,162 @@ export const fetchOverTimeData = async (config: FunnelDefinition): Promise<any[]
   }
 };
 
+export const fetchPathAnalysis = async (config: FunnelDefinition): Promise<any[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/api/funnel/path-analysis`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        completed_within: config.completed_within,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    const result = await response.json();
+    return result.data || [];
+  } catch (error) {
+    console.error('Error fetching path analysis:', error);
+    return [];
+  }
+};
+
+export const fetchLatencyData = async (config: FunnelDefinition): Promise<any[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/api/funnel/latency`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        completed_within: config.completed_within,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    const result = await response.json();
+    return result.data || [];
+  } catch (error) {
+    console.error('Error fetching latency data:', error);
+    return [];
+  }
+};
+
+export const fetchAbnormalDropoffs = async (config: FunnelDefinition): Promise<any[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/api/funnel/abnormal-dropoffs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        completed_within: config.completed_within,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    const result = await response.json();
+    return result.data || [];
+  } catch (error) {
+    console.error('Error fetching abnormal dropoffs:', error);
+    return [];
+  }
+};
+
+export const fetchPriceSensitivity = async (config: FunnelDefinition): Promise<any[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/api/funnel/price-sensitivity`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        completed_within: config.completed_within,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    const result = await response.json();
+    return result.data || [];
+  } catch (error) {
+    console.error('Error fetching price sensitivity:', error);
+    return [];
+  }
+};
+
+export const fetchCohortAnalysis = async (config: FunnelDefinition): Promise<any[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/api/funnel/cohort-analysis`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        steps: config.steps.map(step => ({
+          event_category: step.event_category,
+          event_type: step.event_type,
+          label: step.label || step.event_type,
+          filters: step.filters || []
+        })),
+        completed_within: config.completed_within,
+        global_filters: config.global_filters || null
+      })
+    });
+
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    const result = await response.json();
+    return result.data || [];
+  } catch (error) {
+    console.error('Error fetching cohort analysis:', error);
+    return [];
+  }
+};
+
+export const fetchExecutiveSummary = async (location?: string, days: number = 30): Promise<any> => {
+  try {
+    const url = new URL(`${API_BASE}/api/funnel/executive-summary`);
+    if (location) url.searchParams.append('location', location);
+    url.searchParams.append('days', days.toString());
+    
+    const response = await fetch(url.toString());
+    if (!response.ok) throw new Error(`API error: ${response.statusText}`);
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching executive summary:', error);
+    return {
+      total_revenue_lost: 0,
+      top_3_leaks: [],
+      period_days: days,
+      location: location || "All Locations"
+    };
+  }
+};

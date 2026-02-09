@@ -1,56 +1,59 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const getClient = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    console.error("API_KEY is missing from environment variables.");
-    return null;
-  }
-  return new GoogleGenerativeAI(apiKey);
-};
-
 export const generateInsight = async (
   contextName: string,
   data: any,
   userQuery?: string
 ): Promise<string> => {
-  const genAI = getClient();
-  if (!genAI) return "Error: API Key not configured.";
-
-  const systemInstruction = `
-    You are a Senior Hospitality Revenue Analyst & UI Forensic Investigator for a high-end resort booking platform.
-    Your goal is to move from passive analytics to active intelligence.
-    
-    When analyzing data:
-    1. Identify the "Revenue Leak".
-    2. Hypothesize the user behavior cause (e.g., "Rage clicks on mobile due to 60s load time").
-    3. Quantify the loss.
-    4. Suggest an immediate technical or UX fix.
-    
-    Keep responses concise, professional, and actionable. Avoid generic advice.
-  `;
-
-  const prompt = userQuery 
-    ? userQuery 
-    : `Analyze this ${contextName} data and find the biggest revenue leak or friction point: ${JSON.stringify(data)}`;
-
   try {
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.0-flash-exp",
-      systemInstruction: systemInstruction
+    const response = await fetch('http://localhost:8000/api/ai/insight', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        context_name: contextName,
+        data,
+        user_query: userQuery,
+      }),
     });
 
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.4,
-      }
-    });
+    if (!response.ok) {
+      console.error('AI insight API error:', response.status, await response.text());
+      return 'Unable to generate insights at this time. (AI API error)';
+    }
 
-    const response = result.response;
-    return response.text() || "No insights generated.";
+    const result = await response.json();
+    return result.insight || 'No insights generated.';
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("AI Insight Error:", error);
     return "Unable to generate insights at this time. Please check your API configuration.";
+  }
+};
+
+export const fetchSuggestedQuestions = async (
+  contextName: string,
+  data: any
+): Promise<string[]> => {
+  try {
+    const response = await fetch('http://localhost:8000/api/ai/suggest-questions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        context_name: contextName,
+        data,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('AI suggest-questions API error:', response.status, await response.text());
+      return [];
+    }
+
+    const result = await response.json();
+    return result.questions || [];
+  } catch (error) {
+    console.error("AI Suggested Questions Error:", error);
+    return [];
   }
 };
