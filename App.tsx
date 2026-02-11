@@ -17,6 +17,7 @@ import {
 import FunnelLab from './components/FunnelLab';
 import SegmentStudio from './components/SegmentStudio';
 import FrictionForensic from './components/FrictionForensic';
+import AnalyticsStudio from './components/AnalyticsStudio';
 import AskAISidebar from './components/AskAISidebar';
 import { ViewMode, AiContext } from './types';
 
@@ -63,6 +64,7 @@ type NavKey =
   | 'clip-ai'
   | 'video-generator'
   | 'billing'
+  | 'analytics'
   | 'funnel'
   | 'segment'
   | 'friction'
@@ -106,6 +108,7 @@ const App = () => {
     { key: 'clip-ai', label: 'Clip AI', icon: Wand2 },
     { key: 'video-generator', label: 'Video Generator', icon: VideoGeneratorIcon, customIcon: true },
     { key: 'billing', label: 'Billing & Plan', icon: CreditCard },
+    { key: 'analytics', label: '⭐ Analytics Studio', icon: LayoutDashboard, view: 'analytics' },
     { key: 'funnel', label: 'Funnel Lab', icon: LayoutDashboard, view: 'funnel' },
     { key: 'segment', label: 'Segment Studio', icon: Users, view: 'segment' },
     { key: 'friction', label: 'Friction Forensic', icon: Activity, view: 'friction' },
@@ -265,6 +268,7 @@ const App = () => {
         </header>
 
         <main className="flex-1 overflow-hidden relative">
+          {activeView === 'analytics' && <AnalyticsStudio />}
           {activeView === 'funnel' && <FunnelLab onExplain={handleExplain} />}
           {activeView === 'segment' && <SegmentStudio onExplain={handleExplain} />}
           {activeView === 'friction' && <FrictionForensic />}

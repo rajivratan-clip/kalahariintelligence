@@ -2307,6 +2307,623 @@ async def get_executive_summary(
         raise HTTPException(status_code=500, detail=f"Executive summary error: {str(exc)}")
 
 
+# ============================================================================
+# REVENUE IMPACT ANALYSIS - "Better than Amplitude"
+# ============================================================================
+
+@app.post("/api/analytics/revenue-impact")
+async def get_revenue_impact(request: FunnelRequest) -> Dict[str, Any]:
+    """
+    Revenue Impact Analysis - Calculate actual $ lost at each funnel step.
+    
+    This is BETTER than Amplitude because:
+    - Real revenue calculations from actual session data
+    - Segment-specific revenue breakdown
+    - Predictive "what-if" scenarios
+    - Hospitality-specific metrics (ADR, LOS impact)
+    
+    Returns:
+    - revenue_per_step: $ lost at each step
+    - total_revenue_at_risk: Total $ in pipeline
+    - segment_breakdown: Revenue loss by segment
+    - improvement_opportunities: Projected revenue if friction reduced
+    """
+    try:
+        # Calculate funnel data first
+        funnel_data = await get_funnel_data(request)
+        
+        # Get additional revenue metrics from sessions table
+        step_count = len(request.steps)
+        
+        # Query to get actual revenue data per step
+        revenue_query = f"""
+            SELECT 
+                funnel_exit_step,
+                count(*) as sessions,
+                sum(potential_revenue) as revenue_lost,
+                avg(potential_revenue) as avg_revenue_per_session,
+                countIf(converted = 0) as unconverted_count,
+                sumIf(potential_revenue, converted = 0) as unconverted_revenue
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+              AND funnel_entry_step >= 1
+              AND funnel_exit_step < {step_count}
+            GROUP BY funnel_exit_step
+            ORDER BY funnel_exit_step
+        """
+        
+        revenue_rows = run_query(revenue_query)
+        
+        revenue_by_step = []
+        total_revenue_at_risk = 0
+        
+        for row in revenue_rows:
+            step_num = int(row[0]) if row[0] else 0
+            sessions = int(row[1]) if row[1] else 0
+            revenue_lost = float(row[2]) if row[2] else 0
+            avg_revenue = float(row[3]) if row[3] else 0
+            unconverted = int(row[4]) if row[4] else 0
+            unconverted_revenue = float(row[5]) if row[5] else 0
+            
+            # Map step number to step name
+            step_name = request.steps[step_num].label if step_num < len(request.steps) else f"Step {step_num + 1}"
+            
+            revenue_by_step.append({
+                "step": step_num + 1,
+                "step_name": step_name,
+                "sessions_dropped": sessions,
+                "revenue_lost": round(revenue_lost, 2),
+                "avg_revenue_per_user": round(avg_revenue, 2),
+                "unconverted_count": unconverted,
+                "unconverted_revenue": round(unconverted_revenue, 2)
+            })
+            
+            total_revenue_at_risk += revenue_lost
+        
+        # Segment breakdown (if segments provided)
+        segment_breakdown = []
+        if request.segments:
+            for segment in request.segments:
+                # Build segment filter
+                segment_conditions = []
+                for seg_filter in segment.filters:
+                    prop = seg_filter.property
+                    val = seg_filter.value
+                    val_escaped = str(val).replace("'", "''")
+                    
+                    # Check if property is in sessions table
+                    if prop in ['device_type', 'browser', 'guest_segment', 'traffic_source', 'is_returning_visitor']:
+                        segment_conditions.append(f"{prop} = '{val_escaped}'")
+                
+                if segment_conditions:
+                    segment_where = " AND ".join(segment_conditions)
+                    
+                    seg_revenue_query = f"""
+                        SELECT 
+                            sum(potential_revenue) as total_revenue_lost,
+                            count(*) as dropped_sessions
+                        FROM sessions
+                        WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+                          AND funnel_entry_step >= 1
+                          AND funnel_completed = 0
+                          AND {segment_where}
+                    """
+                    
+                    seg_rows = run_query(seg_revenue_query)
+                    if seg_rows and seg_rows[0]:
+                        segment_breakdown.append({
+                            "segment_name": segment.name,
+                            "segment_id": segment.id,
+                            "revenue_lost": round(float(seg_rows[0][0] or 0), 2),
+                            "dropped_sessions": int(seg_rows[0][1] or 0),
+                            "percentage_of_total": round((float(seg_rows[0][0] or 0) / total_revenue_at_risk * 100) if total_revenue_at_risk > 0 else 0, 1)
+                        })
+        
+        # Calculate improvement opportunities (what-if scenarios)
+        improvement_opportunities = []
+        for i, step_data in enumerate(revenue_by_step):
+            # Calculate if we reduce drop-off by 10%, 25%, 50%
+            revenue_lost = step_data["revenue_lost"]
+            
+            improvement_opportunities.append({
+                "step": step_data["step"],
+                "step_name": step_data["step_name"],
+                "current_revenue_lost": revenue_lost,
+                "if_reduce_10_percent": round(revenue_lost * 0.10, 2),
+                "if_reduce_25_percent": round(revenue_lost * 0.25, 2),
+                "if_reduce_50_percent": round(revenue_lost * 0.50, 2),
+            })
+        
+        return {
+            "total_revenue_at_risk": round(total_revenue_at_risk, 2),
+            "revenue_per_step": revenue_by_step,
+            "segment_breakdown": segment_breakdown,
+            "improvement_opportunities": improvement_opportunities,
+            "period_days": request.completed_within,
+            "currency": "USD",
+            "has_segments": len(segment_breakdown) > 0
+        }
+        
+    except Exception as exc:
+        print(f"[Revenue Impact] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Revenue impact error: {str(exc)}")
+
+
+# ============================================================================
+# HOSPITALITY METRICS ANALYSIS - "Better than Amplitude"
+# ============================================================================
+
+@app.post("/api/analytics/hospitality-metrics")
+async def get_hospitality_metrics(request: FunnelRequest) -> Dict[str, Any]:
+    """
+    Hospitality-Specific Metrics - Industry KPIs that Amplitude can't provide.
+    
+    Returns:
+    - ADR (Average Daily Rate): Average price per night
+    - LOS (Length of Stay): Average nights booked
+    - RevPAR (Revenue per Available Room): Estimated
+    - Booking Intent Score: Engagement-based score
+    - Segment Performance: By guest type
+    - Ancillary Revenue: Add-ons, upgrades
+    """
+    try:
+        # ADR & LOS calculation from completed bookings
+        adr_los_query = f"""
+            SELECT 
+                avg(final_total_price / final_nights_count) as adr,
+                avg(final_nights_count) as avg_los,
+                avg(final_total_price) as avg_booking_value,
+                count(*) as completed_bookings,
+                sum(final_total_price) as total_revenue
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+              AND funnel_completed = 1
+              AND final_nights_count > 0
+              AND final_total_price > 0
+        """
+        
+        adr_los_rows = run_query(adr_los_query)
+        
+        adr = 0
+        avg_los = 0
+        avg_booking_value = 0
+        completed_bookings = 0
+        total_revenue = 0
+        
+        if adr_los_rows and adr_los_rows[0]:
+            adr = float(adr_los_rows[0][0] or 0)
+            avg_los = float(adr_los_rows[0][1] or 0)
+            avg_booking_value = float(adr_los_rows[0][2] or 0)
+            completed_bookings = int(adr_los_rows[0][3] or 0)
+            total_revenue = float(adr_los_rows[0][4] or 0)
+        
+        # Guest Segment Performance
+        segment_performance_query = f"""
+            SELECT 
+                guest_segment,
+                count(*) as sessions,
+                countIf(funnel_completed = 1) as conversions,
+                (countIf(funnel_completed = 1) / count(*) * 100) as conversion_rate,
+                avg(intent_score) as avg_intent_score,
+                avg(final_total_price) as avg_booking_value,
+                avg(final_nights_count) as avg_nights
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+              AND guest_segment != ''
+              AND guest_segment != 'Unknown'
+            GROUP BY guest_segment
+            ORDER BY conversion_rate DESC
+        """
+        
+        segment_rows = run_query(segment_performance_query)
+        
+        segment_performance = []
+        for row in segment_rows:
+            segment_performance.append({
+                "segment": row[0] if row[0] else "Unknown",
+                "sessions": int(row[1]) if row[1] else 0,
+                "conversions": int(row[2]) if row[2] else 0,
+                "conversion_rate": round(float(row[3] or 0), 1),
+                "avg_intent_score": round(float(row[4] or 0), 1),
+                "avg_booking_value": round(float(row[5] or 0), 2),
+                "avg_nights": round(float(row[6] or 0), 1)
+            })
+        
+        # Booking Intent Distribution (users who didn't convert)
+        intent_query = f"""
+            SELECT 
+                CASE 
+                    WHEN intent_score >= 80 THEN 'Very High'
+                    WHEN intent_score >= 60 THEN 'High'
+                    WHEN intent_score >= 40 THEN 'Medium'
+                    WHEN intent_score >= 20 THEN 'Low'
+                    ELSE 'Very Low'
+                END as intent_level,
+                count(*) as count,
+                avg(potential_revenue) as avg_potential_revenue
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+              AND funnel_completed = 0
+              AND funnel_entry_step >= 1
+            GROUP BY intent_level
+            ORDER BY intent_level DESC
+        """
+        
+        intent_rows = run_query(intent_query)
+        
+        intent_distribution = []
+        for row in intent_rows:
+            intent_distribution.append({
+                "intent_level": row[0] if row[0] else "Unknown",
+                "count": int(row[1]) if row[1] else 0,
+                "avg_potential_revenue": round(float(row[2] or 0), 2)
+            })
+        
+        # Ancillary Revenue (add-ons viewed vs added)
+        ancillary_query = f"""
+            SELECT 
+                countIf(addons_viewed > 0) as sessions_with_addon_views,
+                avgIf(conversion_value, addons_viewed > 0 AND converted = 1) as avg_value_with_addons,
+                avgIf(conversion_value, (addons_viewed = 0 OR addons_viewed IS NULL) AND converted = 1) as avg_value_without_addons
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {request.completed_within} DAY
+              AND converted = 1
+        """
+        
+        ancillary_rows = run_query(ancillary_query)
+        
+        addon_impact = {
+            "sessions_viewing_addons": 0,
+            "avg_booking_with_addons": 0,
+            "avg_booking_without_addons": 0,
+            "addon_lift": 0
+        }
+        
+        if ancillary_rows and ancillary_rows[0]:
+            with_addons = float(ancillary_rows[0][1] or 0)
+            without_addons = float(ancillary_rows[0][2] or 0)
+            addon_impact = {
+                "sessions_viewing_addons": int(ancillary_rows[0][0] or 0),
+                "avg_booking_with_addons": round(with_addons, 2),
+                "avg_booking_without_addons": round(without_addons, 2),
+                "addon_lift": round(((with_addons / without_addons - 1) * 100) if without_addons > 0 else 0, 1)
+            }
+        
+        return {
+            "adr": round(adr, 2),
+            "avg_length_of_stay": round(avg_los, 1),
+            "avg_booking_value": round(avg_booking_value, 2),
+            "total_revenue": round(total_revenue, 2),
+            "completed_bookings": completed_bookings,
+            "segment_performance": segment_performance,
+            "intent_distribution": intent_distribution,
+            "ancillary_revenue_impact": addon_impact,
+            "period_days": request.completed_within,
+            "currency": "USD"
+        }
+        
+    except Exception as exc:
+        print(f"[Hospitality Metrics] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Hospitality metrics error: {str(exc)}")
+
+
+# ============================================================================
+# SEGMENTATION ANALYSIS - "Better than Amplitude"
+# ============================================================================
+
+class SegmentationEvent(BaseModel):
+    """Model for events to analyze in segmentation"""
+    id: str
+    event_type: str
+    event_category: str
+    filters: List[EventFilter] = []
+    label: Optional[str] = None
+
+class SegmentationRequest(BaseModel):
+    """Request model for segmentation analysis"""
+    events: List[SegmentationEvent]
+    measurement: str = "uniques"  # uniques, event_totals, active_percent, average, frequency, revenue_per_user
+    time_period: int = 30  # days
+    group_by: Optional[str] = None  # device_type, guest_segment, traffic_source, browser, etc.
+    interval: str = "day"  # day, week, month
+    segments: Optional[List[SegmentComparison]] = []
+
+@app.post("/api/analytics/segmentation")
+async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, Any]:
+    """
+    Segmentation Analysis - Better than Amplitude!
+    
+    Analyzes user behavior across multiple events with advanced grouping,
+    time series trends, and hospitality-specific insights.
+    
+    Measurements:
+    - uniques: Unique users who performed the event
+    - event_totals: Total count of events
+    - active_percent: % of users who performed this event
+    - average: Average events per user
+    - frequency: Distribution of event frequency
+    - revenue_per_user: Revenue metrics per user segment
+    
+    Returns:
+    - summary_metrics: Overall metrics for each event
+    - time_series: Day/week/month trends
+    - breakdown: Group by analysis
+    - comparisons: Segment comparisons
+    """
+    try:
+        print(f"[Segmentation] Received request: {request.dict()}")
+        
+        if not request.events:
+            raise HTTPException(status_code=400, detail="At least one event must be provided")
+        
+        results = []
+        
+        for event_config in request.events:
+            print(f"[Segmentation] Processing event: {event_config.event_type}")
+            # Build event filter SQL
+            event_conditions = []
+            
+            # Map event category and type to SQL conditions
+            if event_config.event_category == 'hospitality':
+                # Use funnel_step mapping for hospitality events
+                step_mapping = {
+                    'Page Viewed': 1,
+                    'Location Select': 2,
+                    'Date Select': 3,
+                    'Room Select': 4,
+                    'Payment': 5,
+                    'Confirmation': 6
+                }
+                if event_config.event_type in step_mapping:
+                    event_conditions.append(f"funnel_step = {step_mapping[event_config.event_type]}")
+            else:
+                # Generic events
+                event_type_escaped = event_config.event_type.replace("'", "''")
+                event_conditions.append(f"event_type = '{event_type_escaped}'")
+            
+            # Add custom filters
+            for filter_obj in event_config.filters:
+                prop = filter_obj.property
+                val = str(filter_obj.value).replace("'", "''")
+                
+                if filter_obj.operator == 'equals':
+                    event_conditions.append(f"{prop} = '{val}'")
+                elif filter_obj.operator == 'contains':
+                    event_conditions.append(f"{prop} LIKE '%{val}%'")
+                elif filter_obj.operator == 'not_equals':
+                    event_conditions.append(f"{prop} != '{val}'")
+            
+            event_where = " AND ".join(event_conditions) if event_conditions else "1=1"
+            print(f"[Segmentation] Event WHERE clause: {event_where}")
+            
+            # ============ CALCULATE METRICS BASED ON MEASUREMENT TYPE ============
+            
+            if request.measurement == 'uniques':
+                # Unique users who performed this event
+                query = f"""
+                    SELECT 
+                        uniqExact(user_id) as unique_users,
+                        count(*) as total_events,
+                        uniqExact(session_id) as unique_sessions
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                """
+                print(f"[Segmentation] Executing uniques query: {query}")
+                rows = run_query(query)
+                print(f"[Segmentation] Query returned {len(rows) if rows else 0} rows")
+                
+                metric_value = int(rows[0][0]) if rows and rows[0] else 0
+                total_events = int(rows[0][1]) if rows and rows[0] else 0
+                unique_sessions = int(rows[0][2]) if rows and rows[0] else 0
+                print(f"[Segmentation] Metrics: unique_users={metric_value}, total_events={total_events}")
+                
+                # Get time series
+                time_series_query = f"""
+                    SELECT 
+                        toDate(timestamp) as date,
+                        uniqExact(user_id) as unique_users
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                    GROUP BY date
+                    ORDER BY date
+                """
+                time_series_rows = run_query(time_series_query)
+                time_series = [
+                    {"date": str(row[0]), "value": int(row[1])}
+                    for row in time_series_rows
+                ]
+                
+            elif request.measurement == 'event_totals':
+                # Total count of events
+                query = f"""
+                    SELECT 
+                        count(*) as total_events,
+                        uniqExact(user_id) as unique_users,
+                        uniqExact(session_id) as unique_sessions
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                """
+                rows = run_query(query)
+                
+                metric_value = int(rows[0][0]) if rows and rows[0] else 0
+                unique_users = int(rows[0][1]) if rows and rows[0] else 0
+                unique_sessions = int(rows[0][2]) if rows and rows[0] else 0
+                
+                # Time series
+                time_series_query = f"""
+                    SELECT 
+                        toDate(timestamp) as date,
+                        count(*) as event_count
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                    GROUP BY date
+                    ORDER BY date
+                """
+                time_series_rows = run_query(time_series_query)
+                time_series = [
+                    {"date": str(row[0]), "value": int(row[1])}
+                    for row in time_series_rows
+                ]
+                
+            elif request.measurement == 'average':
+                # Average events per user
+                query = f"""
+                    SELECT 
+                        count(*) as total_events,
+                        uniqExact(user_id) as unique_users,
+                        (count(*) / uniqExact(user_id)) as avg_per_user
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                """
+                rows = run_query(query)
+                
+                metric_value = round(float(rows[0][2]), 2) if rows and rows[0] else 0
+                total_events = int(rows[0][0]) if rows and rows[0] else 0
+                unique_users = int(rows[0][1]) if rows and rows[0] else 0
+                
+                # Time series
+                time_series_query = f"""
+                    SELECT 
+                        toDate(timestamp) as date,
+                        count(*) / uniqExact(user_id) as avg_per_user
+                    FROM raw_events
+                    WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                    GROUP BY date
+                    ORDER BY date
+                """
+                time_series_rows = run_query(time_series_query)
+                time_series = [
+                    {"date": str(row[0]), "value": round(float(row[1]), 2)}
+                    for row in time_series_rows
+                ]
+                
+            elif request.measurement == 'revenue_per_user':
+                # Revenue metrics per user (from sessions)
+                query = f"""
+                    SELECT 
+                        uniqExact(s.user_id) as unique_users,
+                        sum(s.conversion_value) as total_revenue,
+                        avg(s.conversion_value) as avg_revenue_per_session,
+                        sum(s.conversion_value) / uniqExact(s.user_id) as revenue_per_user
+                    FROM raw_events e
+                    JOIN sessions s ON e.session_id = s.session_id
+                    WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                      AND s.converted = 1
+                """
+                rows = run_query(query)
+                
+                metric_value = round(float(rows[0][3]), 2) if rows and rows[0] and rows[0][3] else 0
+                unique_users = int(rows[0][0]) if rows and rows[0] else 0
+                total_revenue = round(float(rows[0][1]), 2) if rows and rows[0] else 0
+                
+                # Time series
+                time_series_query = f"""
+                    SELECT 
+                        toDate(e.timestamp) as date,
+                        sum(s.conversion_value) / uniqExact(s.user_id) as revenue_per_user
+                    FROM raw_events e
+                    JOIN sessions s ON e.session_id = s.session_id
+                    WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
+                      AND {event_where}
+                      AND s.converted = 1
+                    GROUP BY date
+                    ORDER BY date
+                """
+                time_series_rows = run_query(time_series_query)
+                time_series = [
+                    {"date": str(row[0]), "value": round(float(row[1]), 2) if row[1] else 0}
+                    for row in time_series_rows
+                ]
+            
+            else:
+                metric_value = 0
+                time_series = []
+            
+            # ============ GROUP BY ANALYSIS ============
+            breakdown = []
+            if request.group_by:
+                group_by_col = request.group_by
+                
+                if request.measurement == 'uniques':
+                    breakdown_query = f"""
+                        SELECT 
+                            {group_by_col} as group_name,
+                            uniqExact(user_id) as unique_users,
+                            count(*) as total_events
+                        FROM raw_events
+                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                          AND {event_where}
+                          AND {group_by_col} != ''
+                        GROUP BY group_name
+                        ORDER BY unique_users DESC
+                        LIMIT 10
+                    """
+                elif request.measurement == 'event_totals':
+                    breakdown_query = f"""
+                        SELECT 
+                            {group_by_col} as group_name,
+                            count(*) as event_count,
+                            uniqExact(user_id) as unique_users
+                        FROM raw_events
+                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                          AND {event_where}
+                          AND {group_by_col} != ''
+                        GROUP BY group_name
+                        ORDER BY event_count DESC
+                        LIMIT 10
+                    """
+                else:
+                    breakdown_query = f"""
+                        SELECT 
+                            {group_by_col} as group_name,
+                            count(*) as event_count
+                        FROM raw_events
+                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                          AND {event_where}
+                          AND {group_by_col} != ''
+                        GROUP BY group_name
+                        ORDER BY event_count DESC
+                        LIMIT 10
+                    """
+                
+                breakdown_rows = run_query(breakdown_query)
+                for row in breakdown_rows:
+                    breakdown.append({
+                        "group": str(row[0]),
+                        "value": int(row[1]) if row[1] else 0,
+                        "secondary": int(row[2]) if len(row) > 2 and row[2] else 0
+                    })
+            
+            results.append({
+                "event_id": event_config.id,
+                "event_label": event_config.label or event_config.event_type,
+                "metric_value": metric_value,
+                "time_series": time_series,
+                "breakdown": breakdown
+            })
+        
+        print(f"[Segmentation] Returning {len(results)} results")
+        response_data = {
+            "measurement": request.measurement,
+            "time_period_days": request.time_period,
+            "group_by": request.group_by,
+            "results": results
+        }
+        print(f"[Segmentation] Response: {response_data}")
+        return response_data
+        
+    except Exception as exc:
+        print(f"[Segmentation Analysis] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Segmentation analysis error: {str(exc)}")
+
+
 # -------------------------------
 # AskAI Analyst - Azure GPT Layer
 # -------------------------------

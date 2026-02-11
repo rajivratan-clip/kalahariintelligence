@@ -94,7 +94,7 @@ export interface ChatMessage {
   isThinking?: boolean;
 }
 
-export type ViewMode = 'funnel' | 'segment' | 'friction';
+export type ViewMode = 'analytics' | 'funnel' | 'segment' | 'friction';
 
 export interface AiContext {
   contextName: string;

@@ -49,7 +49,9 @@ import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFil
 import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema, fetchPathAnalysis, fetchLatencyData, fetchAbnormalDropoffs, fetchPriceSensitivity, fetchCohortAnalysis, fetchExecutiveSummary } from '../services/funnelService';
 
 interface FunnelLabProps {
-  onExplain: (title: string, data: any) => void;
+  onExplain?: (title: string, data: any) => void;
+  initialMeasurement?: string;  // Initial view type (from Analytics Studio)
+  isEmbedded?: boolean;          // If true, hide header (Analytics Studio provides it)
 }
 
 // Event Library - Generic Behavioral Events
@@ -156,7 +158,7 @@ const SEGMENT_PROPERTIES = [
   }
 ];
 
-const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
+const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, isEmbedded = false }) => {
   const [config, setConfig] = useState<FunnelDefinition>({
     steps: DEFAULT_STEPS,
     view_type: 'conversion',
@@ -195,6 +197,30 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   const [segmentValues, setSegmentValues] = useState<any>(null);
   const [isLoadingSegmentValues, setIsLoadingSegmentValues] = useState(false);
   const API_BASE = 'http://localhost:8000';
+
+  // Set initial measurement from Analytics Studio
+  useEffect(() => {
+    if (initialMeasurement) {
+      // Map Analytics Studio measurements to FunnelLab tabs
+      const measurementToTab: Record<string, typeof activeTab> = {
+        'conversion': 'conversion',
+        'over_time': 'overTime',
+        'time_to_convert': 'timeToConvert',
+        'path_analysis': 'pathAnalysis',
+        'price_sensitivity': 'priceSensitivity',
+        'cohort_analysis': 'cohortAnalysis',
+        'executive_summary': 'executive',
+        'revenue_impact': 'executive',  // Use executive tab, will add revenue metrics there
+        'ai_insights': 'conversion',     // Will overlay AI insights on conversion
+        'hospitality_metrics': 'executive' // Will add hospitality metrics to executive
+      };
+      
+      const tab = measurementToTab[initialMeasurement as keyof typeof measurementToTab];
+      if (tab) {
+        setActiveTab(tab);
+      }
+    }
+  }, [initialMeasurement]);
 
   // Fetch event schema on mount
   useEffect(() => {
