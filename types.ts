@@ -11,6 +11,8 @@ export interface FunnelStep {
   frictionPoints?: FrictionPoint[];
   filters?: Record<string, any>;
   sparkline?: number[]; // For conversion over time
+  segments?: Record<string, number>; // Segment name -> visitor count
+  hasSegments?: boolean;
 }
 
 export interface FrictionPoint {
@@ -48,6 +50,12 @@ export interface FunnelStepConfig {
   filters?: EventFilter[];  // List of filters (property, operator, value)
 }
 
+export interface SegmentComparison {
+  id: string;
+  name: string;  // User-defined segment name (e.g., "Mobile Users", "VIP Guests")
+  filters: EventFilter[];  // Filters that define this segment
+}
+
 export interface FunnelDefinition {
   steps: FunnelStepConfig[];
   // Amplitude-style "Measured As" = View Type
@@ -58,6 +66,7 @@ export interface FunnelDefinition {
   counting_by: 'unique_users' | 'sessions' | 'events';
   order: 'strict' | 'loose' | 'any';
   group_by?: 'device_type' | 'guest_segment' | 'traffic_source' | null;
+  segments?: SegmentComparison[];  // User-defined segments for comparison
   global_filters?: {
     date_range?: { start: string; end: string };
     location?: string;

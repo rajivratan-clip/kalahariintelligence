@@ -81,6 +81,81 @@ const DEFAULT_STEPS: FunnelStepConfig[] = [
   { id: '6', label: 'Confirmation', event_category: 'hospitality', event_type: 'Confirmation' },
 ];
 
+// Curated Segment Properties - Only useful comparison dimensions with actual database values
+const SEGMENT_PROPERTIES = [
+  {
+    property: 'device_type',
+    label: '📱 Device Type',
+    values: [
+      { value: 'mobile', label: 'Mobile' },
+      { value: 'desktop', label: 'Desktop' },
+      { value: 'tablet', label: 'Tablet' }
+    ]
+  },
+  {
+    property: 'guest_segment',
+    label: '👥 Guest Segment',
+    values: [
+      { value: 'Family', label: 'Family' },
+      { value: 'Couples', label: 'Couples' },
+      { value: 'VIP', label: 'VIP' },
+      { value: 'Corporate', label: 'Corporate' },
+      { value: 'Groups', label: 'Groups' }
+    ]
+  },
+  {
+    property: 'selected_location',
+    label: '🏔️ Location',
+    values: [
+      { value: 'wisconsin_dells', label: 'Wisconsin Dells' },
+      { value: 'pocono_mountains', label: 'Pocono Mountains' },
+      { value: 'round_rock_texas', label: 'Round Rock, Texas' },
+      { value: 'sandusky_ohio', label: 'Sandusky, Ohio' }
+    ]
+  },
+  {
+    property: 'utm_source',
+    label: '🔗 Traffic Source',
+    values: [
+      { value: 'google', label: 'Google' },
+      { value: 'facebook', label: 'Facebook' },
+      { value: 'instagram', label: 'Instagram' },
+      { value: 'bing', label: 'Bing' },
+      { value: 'email', label: 'Email' },
+      { value: 'direct', label: 'Direct' }
+    ]
+  },
+  {
+    property: 'browser',
+    label: '🌐 Browser',
+    values: [
+      { value: 'chrome', label: 'Chrome' },
+      { value: 'safari', label: 'Safari' },
+      { value: 'firefox', label: 'Firefox' },
+      { value: 'edge', label: 'Edge' }
+    ]
+  },
+  {
+    property: 'os',
+    label: '💻 Operating System',
+    values: [
+      { value: 'windows', label: 'Windows' },
+      { value: 'macos', label: 'macOS' },
+      { value: 'ios', label: 'iOS' },
+      { value: 'android', label: 'Android' },
+      { value: 'linux', label: 'Linux' }
+    ]
+  },
+  {
+    property: 'is_returning_visitor',
+    label: '🔄 Visitor Type',
+    values: [
+      { value: 'true', label: 'Returning Visitors' },
+      { value: 'false', label: 'New Visitors' }
+    ]
+  }
+];
+
 const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   const [config, setConfig] = useState<FunnelDefinition>({
     steps: DEFAULT_STEPS,
@@ -89,6 +164,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     counting_by: 'unique_users',
     order: 'strict',
     group_by: null,
+    segments: [],  // User-defined segments for comparison
     global_filters: {},
     compare_segment: null
   });
@@ -97,8 +173,11 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   const [overTimeData, setOverTimeData] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showAddStepModal, setShowAddStepModal] = useState(false);
-  const [selectedEventCategory, setSelectedEventCategory] = useState<'generic' | 'hospitality'>('hospitality');
+  const [selectedEventCategory, setSelectedEventCategory] = useState<'generic' | 'hospitality' | 'custom'>('hospitality');
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);  // For segment filter editing
+  const [showCustomEventBuilder, setShowCustomEventBuilder] = useState(false);  // For custom event creation
+  const [customEvents, setCustomEvents] = useState<any[]>([]);  // User's custom event templates
   const [frictionData, setFrictionData] = useState<Record<string, FrictionPoint[]>>({});
   const [hoveredStep, setHoveredStep] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'conversion' | 'overTime' | 'timeToConvert' | 'pathAnalysis' | 'priceSensitivity' | 'cohortAnalysis' | 'executive'>('conversion');
@@ -113,7 +192,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
   
   // Event schema from backend
   const [eventSchema, setEventSchema] = useState<any>(null);
-  const [availableLocations, setAvailableLocations] = useState<string[]>([]);
+  const [segmentValues, setSegmentValues] = useState<any>(null);
+  const [isLoadingSegmentValues, setIsLoadingSegmentValues] = useState(false);
   const API_BASE = 'http://localhost:8000';
 
   // Fetch event schema on mount
@@ -121,23 +201,99 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     const loadSchema = async () => {
       const schema = await fetchEventSchema();
       setEventSchema(schema);
+      // Custom events are now included in the schema response
+      if (schema.custom_events) {
+        setCustomEvents(schema.custom_events);
+      }
     };
     loadSchema();
     
-    // Load available locations
-    const loadLocations = async () => {
+    // Load segment values (actual database values)
+    const loadSegmentValues = async () => {
+      setIsLoadingSegmentValues(true);
       try {
-        const response = await fetch(`${API_BASE}/api/funnel/locations`);
+        const response = await fetch(`${API_BASE}/api/metadata/segment-values`);
         if (response.ok) {
-          const locations = await response.json();
-          setAvailableLocations(locations);
+          const data = await response.json();
+          setSegmentValues(data.segment_properties);
         }
       } catch (error) {
-        console.error('Error loading locations:', error);
+        console.error('Error loading segment values:', error);
+      } finally {
+        setIsLoadingSegmentValues(false);
       }
     };
-    loadLocations();
+    loadSegmentValues();
+    
+    // Load custom events
+    loadCustomEvents();
   }, []);
+  
+  // Function to load custom events from backend
+  const loadCustomEvents = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/custom-events?user_id=default_user`);
+      if (response.ok) {
+        const data = await response.json();
+        setCustomEvents(data.custom_events || []);
+      }
+    } catch (error) {
+      console.error('Error loading custom events:', error);
+    }
+  };
+  
+  // Function to create a new custom event template
+  const createCustomEvent = async (template: {
+    template_name: string;
+    description?: string;
+    base_event_type: string;
+    filters: any[];
+    icon?: string;
+  }) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/custom-events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: 'default_user',
+          template_name: template.template_name,
+          description: template.description || '',
+          base_event_type: template.base_event_type,
+          base_event_category: 'generic',
+          filters: template.filters,
+          icon: template.icon || '📦'
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        // Reload custom events
+        await loadCustomEvents();
+        return result;
+      }
+    } catch (error) {
+      console.error('Error creating custom event:', error);
+      throw error;
+    }
+  };
+  
+  // Function to delete a custom event template
+  const deleteCustomEvent = async (templateId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/custom-events/${templateId}?user_id=default_user`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        // Reload custom events
+        await loadCustomEvents();
+        return true;
+      }
+    } catch (error) {
+      console.error('Error deleting custom event:', error);
+      throw error;
+    }
+  };
 
   // Fetch funnel data when config changes
   useEffect(() => {
@@ -152,7 +308,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
           fetchAbnormalDropoffs(config),
           fetchPriceSensitivity(config),
           fetchCohortAnalysis(config),
-          fetchExecutiveSummary(config.global_filters?.location, 30)
+          fetchExecutiveSummary(undefined, 30)
         ]);
         setData(funnelData);
         setOverTimeData(timeSeriesData);
@@ -188,13 +344,13 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     }
   }, [config]);
 
-  const handleAddStep = (eventType: string, category: 'generic' | 'hospitality') => {
+  const handleAddStep = (eventType: string, category: 'generic' | 'hospitality' | 'custom', customEventData?: any) => {
     const newStep: FunnelStepConfig = {
       id: Date.now().toString(),
       label: eventType,
       event_category: category,
-      event_type: eventType,
-      filters: []
+      event_type: category === 'custom' ? (customEventData?.base_event_type || eventType) : eventType,
+      filters: category === 'custom' ? (customEventData?.filters || []) : []
     };
          setConfig(prev => ({
              ...prev,
@@ -294,16 +450,60 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
     setConfig(prev => ({ ...prev, group_by }));
   };
 
-  // Global filter handlers: act as top-level WHERE filters in ClickHouse
-  const handleUpdateLocationFilter = (locationValue: string) => {
+  // Segment Comparison Handlers
+  const handleAddSegment = () => {
+    const newSegment: SegmentComparison = {
+      id: Date.now().toString(),
+      name: `Segment ${(config.segments?.length || 0) + 1}`,
+      filters: []
+    };
     setConfig(prev => ({
       ...prev,
-      global_filters: {
-        ...(prev.global_filters || {}),
-        location: locationValue === 'All Locations' ? undefined : locationValue,
-      },
+      segments: [...(prev.segments || []), newSegment]
+    }));
+    // Auto-open editing mode for the new segment
+    setTimeout(() => setEditingSegmentId(newSegment.id), 100);
+  };
+
+  const handleRemoveSegment = (segmentId: string) => {
+    setConfig(prev => ({
+      ...prev,
+      segments: (prev.segments || []).filter(s => s.id !== segmentId)
+    }));
+    if (editingSegmentId === segmentId) {
+      setEditingSegmentId(null);
+    }
+  };
+
+  const handleUpdateSegmentName = (segmentId: string, name: string) => {
+    setConfig(prev => ({
+      ...prev,
+      segments: (prev.segments || []).map(s =>
+        s.id === segmentId ? { ...s, name } : s
+      )
     }));
   };
+
+  const handleAddSegmentFilter = (segmentId: string, filter: EventFilter) => {
+    setConfig(prev => ({
+      ...prev,
+      segments: (prev.segments || []).map(s =>
+        s.id === segmentId ? { ...s, filters: [...s.filters, filter] } : s
+      )
+    }));
+  };
+
+  const handleRemoveSegmentFilter = (segmentId: string, filterIndex: number) => {
+    setConfig(prev => ({
+      ...prev,
+      segments: (prev.segments || []).map(s =>
+        s.id === segmentId 
+          ? { ...s, filters: s.filters.filter((_, idx) => idx !== filterIndex) }
+          : s
+      )
+    }));
+  };
+
 
 
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -362,28 +562,6 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
         </div>
 
         {/* Global Filters */}
-        <div className="p-4 border-b border-slate-200 bg-white">
-          <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-            <Filter size={12} />
-            Global Filters
-          </h3>
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm">
-              <MapPin size={14} className="text-slate-400" />
-              <select
-                className="flex-1 text-sm bg-slate-50 border border-slate-200 rounded p-1.5 outline-none"
-                value={config.global_filters?.location || 'All Locations'}
-                onChange={(e) => handleUpdateLocationFilter(e.target.value)}
-              >
-                <option value="All Locations">All Locations</option>
-                {availableLocations.map(loc => (
-                  <option key={loc} value={loc}>{loc}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
-            
         {/* Step List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <div className="flex justify-between items-center mb-2">
@@ -505,24 +683,96 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                     </button>
             </div>
 
-          {/* Group By Section */}
+          {/* Segment Comparison Section */}
           <div className="pt-4 border-t border-slate-200 mt-4">
-            <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Group By</h3>
-            <div className="space-y-1.5">
-              {(['device_type', 'guest_segment', 'traffic_source'] as const).map((option) => (
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Segment Comparison</h3>
+              {config.segments && config.segments.length > 0 && (
                 <button
-                  key={option}
-                  onClick={() => handleUpdateGroupBy(config.group_by === option ? null : option)}
-                  className={`w-full text-left px-3 py-2 text-sm rounded border transition-colors ${
-                    config.group_by === option
-                      ? 'bg-brand-50 border-brand-200 text-brand-700'
-                      : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                  }`}
+                  onClick={() => setConfig(prev => ({ ...prev, segments: [] }))}
+                  className="text-[10px] text-red-500 hover:text-red-700 font-medium"
                 >
-                  {option.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                  Clear All
                 </button>
-              ))}
+              )}
+            </div>
+            
+            <div className="text-[10px] text-slate-500 mb-3 p-2 bg-slate-50 rounded border border-slate-200">
+              Each segment = one filter. Compare "Mobile Users" vs "Desktop Users" vs "Families"
+            </div>
+            
+            {/* Segment List */}
+            {config.segments && config.segments.length > 0 && (
+              <div className="space-y-2 mb-2">
+                {config.segments.map((segment, idx) => (
+                  <div key={segment.id} className="p-2 bg-white border border-slate-200 rounded">
+                    <div className="flex items-center justify-between mb-1">
+                      <input
+                        type="text"
+                        value={segment.name}
+                        onChange={(e) => handleUpdateSegmentName(segment.id, e.target.value)}
+                        className="text-xs font-medium text-slate-700 bg-transparent border-none focus:outline-none flex-1"
+                        placeholder="Segment name"
+                      />
+                      <button
+                        onClick={() => handleRemoveSegment(segment.id)}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                    
+                    {/* Segment Filter - Only ONE filter per segment */}
+                    {segment.filters && segment.filters.length > 0 ? (
+                      <div className="flex items-center justify-between p-2 bg-purple-50 border border-purple-200 rounded">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-medium text-purple-900">{segment.filters[0].property}</span>
+                          <span className="text-purple-400">=</span>
+                          <span className="font-mono text-purple-700">{String(segment.filters[0].value)}</span>
                         </div>
+                        <button
+                          onClick={() => handleRemoveSegmentFilter(segment.id, 0)}
+                          className="text-purple-500 hover:text-purple-700"
+                          title="Remove filter"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      /* No filter yet - show filter builder */
+                      editingSegmentId === segment.id ? (
+                        <div className="mt-1">
+                          <SegmentFilterBuilder
+                            segmentValues={segmentValues}
+                            isLoading={isLoadingSegmentValues}
+                            onAddFilter={(filter) => {
+                              handleAddSegmentFilter(segment.id, filter);
+                              setEditingSegmentId(null); // Auto-close after adding
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setEditingSegmentId(segment.id)}
+                          className="w-full text-[10px] px-2 py-1 bg-purple-50 text-purple-600 rounded hover:bg-purple-100 flex items-center justify-center gap-1 font-medium"
+                          disabled={isLoadingSegmentValues}
+                        >
+                          <Plus size={10} /> {isLoadingSegmentValues ? 'Loading...' : 'Set Filter'}
+                        </button>
+                      )
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Add Segment Button */}
+            <button
+              onClick={handleAddSegment}
+              className="w-full py-2 border-2 border-dashed border-purple-300 rounded-lg text-xs text-purple-600 hover:text-purple-700 hover:border-purple-400 flex items-center justify-center gap-1 transition-all"
+            >
+              <Plus size={14} /> Add Segment
+            </button>
                      </div>
 
           {/* Measured As - Amplitude Style */}
@@ -712,7 +962,61 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
 
             {/* Summary Metrics */}
         <div className="p-6 pb-4">
-          <div className="grid grid-cols-4 gap-4">
+          {config.segments && config.segments.length > 0 && data.length > 0 && data[0].segments ? (
+            /* Per-Segment Metrics (Amplitude-style) */
+            <div className="grid grid-cols-1 gap-3">
+              <div className="text-sm font-semibold text-slate-700 mb-1">Conversion Rates by Segment</div>
+              {config.segments.map((segment, idx) => {
+                // Calculate conversion rate for this segment
+                const firstStep = data[0];
+                const lastStep = data[data.length - 1];
+                const firstStepCount = firstStep.segments?.[segment.name] || 0;
+                const lastStepCount = lastStep.segments?.[segment.name] || 0;
+                const segmentConversion = firstStepCount > 0 ? ((lastStepCount / firstStepCount) * 100).toFixed(1) : '0.0';
+                const segmentColor = `hsl(${idx * (360 / config.segments.length)}, 70%, 50%)`;
+                
+                return (
+                  <div key={segment.id} className="bg-white p-4 rounded-xl border-2 shadow-sm" style={{ borderColor: segmentColor }}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-4 h-4 rounded" style={{ backgroundColor: segmentColor }}></div>
+                        <div>
+                          <div className="text-slate-700 text-sm font-medium">{segment.name}</div>
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            {segment.filters.length > 0 ? (
+                              <>{segment.filters[0].property} = {String(segment.filters[0].value)}</>
+                            ) : (
+                              'No filter set'
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-3xl font-bold text-slate-800">{segmentConversion}%</div>
+                        <div className="text-xs text-slate-500 mt-1">Conversion Rate</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2 pt-3 border-t border-slate-100">
+                      <div>
+                        <div className="text-xs text-slate-500">Started</div>
+                        <div className="text-sm font-semibold text-slate-700">{firstStepCount.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500">Completed</div>
+                        <div className="text-sm font-semibold text-green-600">{lastStepCount.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-500">Dropped</div>
+                        <div className="text-sm font-semibold text-red-600">{(firstStepCount - lastStepCount).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Aggregate Metrics (when no segments) */
+            <div className="grid grid-cols-4 gap-4">
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                     <div className="text-slate-500 text-xs font-medium uppercase mb-1">Total Conversion</div>
               <div className="text-2xl font-bold text-slate-800">{totalConversion}%</div>
@@ -736,113 +1040,231 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                       {(() => {
                         // Use the LAST step's cumulative time (time from start to final conversion)
                         const lastStep = latencyData[latencyData.length - 1];
-                        const totalSeconds = lastStep?.median_time_seconds || 0;
+                        // Use best_time_seconds which falls back to P95 if median is 0
+                        const totalSeconds = lastStep?.best_time_seconds || lastStep?.median_time_seconds || lastStep?.p95_seconds || 0;
                         const minutes = Math.floor(totalSeconds / 60);
                         const seconds = Math.floor(totalSeconds % 60);
                         return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
                       })()}
                     </div>
                     <div className="text-xs text-slate-400 mt-1">Median duration</div>
-            </div>
                 </div>
             </div>
-
-        {/* Chart Tabs */}
-        <div className="px-6 pt-2 border-b border-slate-200 bg-white">
-          <div className="flex gap-6">
-            <button
-              onClick={() => setActiveTab('conversion')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'conversion'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Conversion
-            </button>
-            <button
-              onClick={() => setActiveTab('overTime')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'overTime'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Over Time
-            </button>
-            <button
-              onClick={() => setActiveTab('timeToConvert')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'timeToConvert'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Time to Convert
-            </button>
-            <button
-              onClick={() => setActiveTab('pathAnalysis')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'pathAnalysis'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Path Analysis
-            </button>
-            <button
-              onClick={() => setActiveTab('priceSensitivity')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'priceSensitivity'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Price Sensitivity
-            </button>
-            <button
-              onClick={() => setActiveTab('cohortAnalysis')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'cohortAnalysis'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Cohort Analysis
-            </button>
-            <button
-              onClick={() => setActiveTab('executive')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === 'executive'
-                  ? 'border-brand-500 text-brand-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Executive Summary
-            </button>
-          </div>
+          )}
         </div>
 
         {/* Main Chart */}
         <div className="flex-1 p-6 pt-0 overflow-y-auto">
+          {/* Segment Comparison Banner */}
+          {config.segments && config.segments.length > 0 && (
+            <div className="mb-4 p-3 bg-gradient-to-r from-purple-50 to-blue-50 border-l-4 border-purple-500 rounded-lg shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-semibold text-purple-900">
+                    Comparing {config.segments.length} Segment{config.segments.length > 1 ? 's' : ''}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setConfig(prev => ({ ...prev, segments: [] }))}
+                  className="text-xs px-2 py-1 bg-white border border-purple-300 rounded text-purple-700 hover:bg-purple-100 font-medium transition-colors"
+                >
+                  Clear All
+                </button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {config.segments.map((segment, idx) => (
+                  <div key={segment.id} className="flex items-center gap-1 px-2 py-1 bg-white rounded border border-purple-200 text-xs">
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: `hsl(${idx * 60}, 70%, 50%)` }}></div>
+                    <span className="font-medium text-purple-900">{segment.name}</span>
+                    {segment.filters.length > 0 && (
+                      <span className="text-purple-500">({segment.filters[0].property} = {String(segment.filters[0].value)})</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 min-h-[500px]">
                 {activeTab === 'conversion' && (
               <div className="h-[700px] w-full">
-                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart 
-                                data={data.map((step, idx) => {
-                                  // Ensure conversionRate + dropOffRate = 100 for proper stacking
-                                  const convRate = step.conversionRate || 0;
-                                  const dropRate = idx === 0 ? 0 : (100 - convRate);
-                                  return {
-                                    ...step,
-                                    conversionRate: convRate,
-                                    dropOffRate: dropRate
-                                  };
-                                })}
-                    margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
-                    barCategoryGap="30%"
-                            >
+                {/* Check if we have segments for comparison */}
+                {(() => {
+                  const hasSegments = config.segments && config.segments.length > 0;
+                  
+                  // Transform data for segment comparison
+                  if (hasSegments) {
+                    // Extract segment names
+                    const segmentNames = config.segments!.map(s => s.name);
+                    
+                    // Check if we have any segment data
+                    const hasSegmentData = data.some(step => step.segments && Object.keys(step.segments).length > 0);
+                    
+                    if (!hasSegmentData) {
+                      // Show empty state
+                      return (
+                        <div className="flex items-center justify-center h-full">
+                          <div className="text-center text-slate-400 max-w-md">
+                            <AlertTriangle size={48} className="mx-auto mb-4 opacity-50 text-amber-500" />
+                            <p className="text-lg font-medium text-slate-700 mb-2">No Data for Selected Segments</p>
+                            <p className="text-sm text-slate-500 mb-4">
+                              The segments you've created don't have enough data in the database. 
+                              Try adjusting your segment filters or selecting different properties.
+                            </p>
+                            <div className="text-xs text-slate-400 bg-slate-50 rounded p-3 border border-slate-200">
+                              <div className="font-medium mb-1">Active Segments:</div>
+                              {config.segments!.map((seg, idx) => (
+                                <div key={seg.id} className="text-left">
+                                  • {seg.name}: {seg.filters.map(f => `${f.property}=${f.value}`).join(', ')}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }
+                    
+                    // Transform data to show each segment as a grouped bar
+                    const segmentChartData = data.map((step, idx) => {
+                      const chartEntry: any = { name: step.name };
+                      
+                      // For each segment, calculate conversion rate
+                      if (step.segments) {
+                        segmentNames.forEach((segmentName) => {
+                          const segmentCount = step.segments[segmentName] || 0;
+                          // Get total for this segment at previous step (for conversion rate)
+                          const prevStep = idx > 0 ? data[idx - 1] : null;
+                          const prevSegmentCount = prevStep?.segments?.[segmentName] || segmentCount;
+                          
+                          const conversionRate = prevSegmentCount > 0 ? (segmentCount / prevSegmentCount * 100) : 100;
+                          chartEntry[segmentName] = Math.round(conversionRate * 10) / 10;
+                        });
+                      }
+                      
+                      return chartEntry;
+                    });
+                    
+                    // Generate colors for each segment
+                    const segmentColors = segmentNames.map((_, idx) => {
+                      const hue = idx * (360 / segmentNames.length);
+                      return `hsl(${hue}, 70%, 50%)`;
+                    });
+                    
+                    return (
+                      <>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={segmentChartData}
+                            margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
+                            barCategoryGap="15%"
+                            barGap={4}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                            <XAxis 
+                              dataKey="name"
+                              tick={(props) => {
+                                const { x, y, payload } = props;
+                                const words = payload.value.split(' ');
+                                return (
+                                  <g transform={`translate(${x},${y})`}>
+                                    {words.map((word: string, i: number) => (
+                                      <text
+                                        key={i}
+                                        x={0}
+                                        y={i * 16}
+                                        dy={12}
+                                        textAnchor="middle"
+                                        fill="#475569"
+                                        fontSize={12}
+                                        fontWeight={500}
+                                      >
+                                        {word}
+                                      </text>
+                                    ))}
+                                  </g>
+                                );
+                              }}
+                              height={100}
+                              interval={0}
+                            />
+                            <YAxis 
+                              domain={[0, 100]}
+                              tick={{fontSize: 12, fill: '#475569'}}
+                              tickFormatter={(value) => `${value}%`}
+                              label={{ value: 'Conversion Rate (%)', angle: -90, position: 'insideLeft', style: { fontSize: 13, fill: '#475569', fontWeight: 500 } }}
+                            />
+                            <Tooltip 
+                              cursor={{fill: 'rgba(148, 163, 184, 0.1)'}}
+                              content={({ active, payload, label }) => {
+                                if (active && payload && payload.length > 0) {
+                                  return (
+                                    <div className="bg-white border-2 border-purple-600 rounded-lg shadow-xl p-4">
+                                      <p className="font-semibold text-slate-800 mb-3">{label}</p>
+                                      <div className="space-y-2">
+                                        {payload.map((entry, idx) => (
+                                          <div key={idx} className="flex items-center justify-between gap-4">
+                                            <div className="flex items-center gap-2">
+                                              <div className="w-4 h-4 rounded" style={{ backgroundColor: entry.color }}></div>
+                                              <span className="text-slate-700 font-medium text-sm">{entry.name}</span>
+                                            </div>
+                                            <span className="font-semibold text-purple-700">{entry.value}%</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                            {segmentNames.map((segmentName, idx) => (
+                              <Bar
+                                key={segmentName}
+                                dataKey={segmentName}
+                                fill={segmentColors[idx]}
+                                radius={[4, 4, 0, 0]}
+                                maxBarSize={60}
+                                animationDuration={800}
+                              />
+                            ))}
+                          </BarChart>
+                        </ResponsiveContainer>
+                        
+                        {/* Segment Legend */}
+                        <div className="flex items-center justify-center gap-4 flex-wrap -mt-8 mb-6 text-sm">
+                          {segmentNames.map((segmentName, idx) => (
+                            <div key={segmentName} className="flex items-center gap-2">
+                              <div className="w-6 h-4 rounded border-2" style={{ 
+                                backgroundColor: segmentColors[idx],
+                                borderColor: segmentColors[idx]
+                              }}></div>
+                              <span className="text-slate-700 font-medium">{segmentName}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  }
+                  
+                  // Default single-funnel view (no segments)
+                  return (
+                    <>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart 
+                          data={data.map((step, idx) => {
+                            // Ensure conversionRate + dropOffRate = 100 for proper stacking
+                            const convRate = step.conversionRate || 0;
+                            const dropRate = idx === 0 ? 0 : (100 - convRate);
+                            return {
+                              ...step,
+                              conversionRate: convRate,
+                              dropOffRate: dropRate
+                            };
+                          })}
+                          margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
+                          barCategoryGap="30%"
+                        >
                                 <defs>
                                   {/* Diagonal stripe pattern for drop-offs */}
                                   <pattern id="diagonalStripes" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
@@ -1021,7 +1443,10 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                             <span className="text-slate-700 font-medium">Dropped Off</span>
                           </div>
                         </div>
-                    </div>
+                      </>
+                    );
+                  })()}
+                  </div>
                 )}
 
                  {activeTab === 'overTime' && (
@@ -1103,10 +1528,10 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                         <div className="text-2xl font-bold text-slate-800">
                           {(() => {
                             const lastStep = latencyData[latencyData.length - 1];
-                            const totalSeconds = lastStep?.median_time_seconds || 0;
+                            const totalSeconds = lastStep?.best_time_seconds || lastStep?.median_time_seconds || lastStep?.p95_seconds || 0;
                             const minutes = Math.floor(totalSeconds / 60);
                             const seconds = Math.floor(totalSeconds % 60);
-                            return `${minutes}m ${seconds}s`;
+                            return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
                           })()}
                         </div>
                       </div>
@@ -1128,8 +1553,9 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                     <div className="space-y-3">
                       <h4 className="text-sm font-semibold text-slate-700 mb-3">Cumulative Time to Reach Each Step</h4>
                       {latencyData.map((step, idx) => {
-                        const minutes = Math.floor(step.median_time_seconds / 60);
-                        const seconds = Math.floor(step.median_time_seconds % 60);
+                        const bestTime = step.best_time_seconds || step.median_time_seconds || step.p95_seconds || 0;
+                        const minutes = Math.floor(bestTime / 60);
+                        const seconds = Math.floor(bestTime % 60);
                         const p95Minutes = Math.floor((step.p95_seconds || 0) / 60);
                         const p95Seconds = Math.floor((step.p95_seconds || 0) % 60);
                         
@@ -1464,48 +1890,147 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain }) => {
                 >
                   Generic Events
                 </button>
+                <button
+                  onClick={() => setSelectedEventCategory('custom')}
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                    selectedEventCategory === 'custom'
+                      ? 'border-brand-500 text-brand-600'
+                      : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  Custom ({customEvents.length})
+                </button>
       </div>
 
               {/* Event List */}
               <div className="grid grid-cols-1 gap-2">
-                {eventSchema ? (
-                  (selectedEventCategory === 'hospitality' 
-                    ? eventSchema.hospitality_events || []
-                    : eventSchema.generic_events || []
-                  ).map((event: any) => (
+                {selectedEventCategory === 'custom' ? (
+                  /* Custom Events */
+                  <>
+                    {/* Create New Custom Event Button */}
                     <button
-                      key={event.name || event.event_type}
-                      onClick={() => handleAddStep(event.name || event.event_type, selectedEventCategory)}
-                      className="text-left p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
+                      onClick={() => setShowCustomEventBuilder(true)}
+                      className="p-4 border-2 border-dashed border-purple-300 rounded-lg hover:border-purple-400 hover:bg-purple-50 transition-all text-purple-600 font-medium flex items-center justify-center gap-2"
                     >
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-brand-100">
-                          {selectedEventCategory === 'hospitality' ? (
-                            <Target size={20} className="text-slate-600 group-hover:text-brand-600" />
-                          ) : (
-                            <MousePointerClick size={20} className="text-slate-600 group-hover:text-brand-600" />
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <div className="font-medium text-slate-800">{event.name}</div>
-                          {event.properties && (
-                            <div className="text-xs text-slate-500 mt-0.5">
-                              {event.properties.length} filterable properties
-                            </div>
-                          )}
-                        </div>
-                        <ArrowRight size={16} className="text-slate-300 group-hover:text-brand-500" />
-                      </div>
+                      <Plus size={20} /> Create New Custom Event
                     </button>
-                  ))
+                    
+                    {/* List of Custom Events */}
+                    {customEvents.length > 0 ? (
+                      customEvents.map((event: any) => (
+                        <div
+                          key={event.template_id}
+                          className="p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="text-2xl">{event.icon || '📦'}</div>
+                            <div className="flex-1">
+                              <div className="font-medium text-slate-800">{event.name}</div>
+                              <div className="text-xs text-slate-500 mt-0.5">
+                                {event.base_event_type} + {event.filters?.length || 0} filter{event.filters?.length !== 1 ? 's' : ''}
+                              </div>
+                              {event.description && (
+                                <div className="text-xs text-slate-400 mt-1">{event.description}</div>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleAddStep(event.name, 'custom', event)}
+                                className="px-3 py-1.5 bg-brand-500 text-white text-xs rounded hover:bg-brand-600 transition-colors"
+                              >
+                                Use
+                              </button>
+                              <button
+                                onClick={() => {
+                                  if (confirm(`Delete "${event.name}"?`)) {
+                                    deleteCustomEvent(event.template_id);
+                                  }
+                                }}
+                                className="px-3 py-1.5 bg-red-100 text-red-600 text-xs rounded hover:bg-red-200 transition-colors"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-12 text-slate-400">
+                        <MousePointerClick size={32} className="mx-auto mb-2 text-slate-300" />
+                        <p className="text-sm font-medium">No custom events yet</p>
+                        <p className="text-xs mt-1">Create your first custom event template!</p>
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <div className="text-center py-8 text-slate-400">
-                    <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 border-t-brand-500 mx-auto mb-2"></div>
-                    <p className="text-sm">Loading event types...</p>
-                  </div>
+                  /* Hospitality & Generic Events */
+                  eventSchema ? (
+                    (selectedEventCategory === 'hospitality' 
+                      ? eventSchema.hospitality_events || []
+                      : eventSchema.generic_events || []
+                    ).map((event: any) => (
+                      <button
+                        key={event.name || event.event_type}
+                        onClick={() => handleAddStep(event.name || event.event_type, selectedEventCategory)}
+                        className="text-left p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-brand-100">
+                            {selectedEventCategory === 'hospitality' ? (
+                              <Target size={20} className="text-slate-600 group-hover:text-brand-600" />
+                            ) : (
+                              <MousePointerClick size={20} className="text-slate-600 group-hover:text-brand-600" />
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <div className="font-medium text-slate-800">{event.name}</div>
+                            {event.properties && (
+                              <div className="text-xs text-slate-500 mt-0.5">
+                                {event.properties.length} filterable properties
+                              </div>
+                            )}
+                          </div>
+                          <ArrowRight size={16} className="text-slate-300 group-hover:text-brand-500" />
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-slate-400">
+                      <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 border-t-brand-500 mx-auto mb-2"></div>
+                      <p className="text-sm">Loading event types...</p>
+                    </div>
+                  )
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Event Builder Modal */}
+      {showCustomEventBuilder && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setShowCustomEventBuilder(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-[500px] max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-800">Create Custom Event</h3>
+              <button onClick={() => setShowCustomEventBuilder(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <CustomEventBuilderForm
+              eventSchema={eventSchema}
+              onSave={async (template) => {
+                try {
+                  await createCustomEvent(template);
+                  setShowCustomEventBuilder(false);
+                  alert(`✅ Custom event "${template.template_name}" created!`);
+                } catch (error) {
+                  alert('❌ Failed to create custom event');
+                }
+              }}
+              onCancel={() => setShowCustomEventBuilder(false)}
+            />
           </div>
         </div>
       )}
@@ -1700,6 +2225,355 @@ const FilterBuilder: React.FC<FilterBuilderProps> = ({ step, eventSchema, onAddF
       >
         + Add Filter
       </button>
+    </div>
+  );
+};
+
+// Simplified Segment Filter Builder - Uses dropdowns with actual database values
+interface SegmentFilterBuilderProps {
+  segmentValues: any;
+  isLoading: boolean;
+  onAddFilter: (filter: EventFilter) => void;
+}
+
+const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValues, isLoading, onAddFilter }) => {
+  const [selectedProperty, setSelectedProperty] = React.useState('');
+  const [selectedValue, setSelectedValue] = React.useState('');
+
+  // Map property keys to user-friendly labels
+  const propertyLabels: Record<string, string> = {
+    'device_type': '📱 Device Type',
+    'guest_segment': '👥 Guest Segment',
+    'selected_location': '🏔️ Location',
+    'traffic_source': '🔗 Traffic Source',
+    'browser': '🌐 Browser',
+    'os': '💻 Operating System',
+    'is_returning_visitor': '🔄 Visitor Type'
+  };
+
+  const handleAdd = () => {
+    if (!selectedProperty || !selectedValue) return;
+    
+    // Convert string "true"/"false" to boolean for is_returning_visitor
+    let finalValue: string | boolean = selectedValue;
+    if (selectedProperty === 'is_returning_visitor') {
+      finalValue = selectedValue === 'true';
+    }
+    
+    onAddFilter({
+      property: selectedProperty,
+      operator: 'equals',
+      value: finalValue
+    });
+    
+    // Reset form
+    setSelectedProperty('');
+    setSelectedValue('');
+  };
+
+  // Get available values for selected property
+  const availableValues = selectedProperty && segmentValues ? segmentValues[selectedProperty] : [];
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2 p-2 bg-purple-50 rounded border border-purple-200">
+        <div className="flex items-center justify-center py-2 text-xs text-purple-600">
+          <div className="animate-spin rounded-full h-4 w-4 border-2 border-purple-600 border-t-transparent mr-2"></div>
+          Loading available values...
+        </div>
+      </div>
+    );
+  }
+
+  if (!segmentValues || Object.keys(segmentValues).length === 0) {
+    return (
+      <div className="space-y-2 p-2 bg-amber-50 rounded border border-amber-200">
+        <div className="text-xs text-amber-700 text-center py-2">
+          ⚠️ No segment data available. Please check your database.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 p-2 bg-purple-50 rounded border border-purple-200">
+      <div className="text-[10px] text-purple-700 font-medium mb-1">
+        💡 One filter per segment. Need more? Create another segment!
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {/* Property Selector */}
+        <select
+          value={selectedProperty}
+          onChange={(e) => {
+            setSelectedProperty(e.target.value);
+            setSelectedValue(''); // Reset value when property changes
+          }}
+          className="text-xs bg-white border border-purple-300 rounded p-1.5 text-purple-900"
+        >
+          <option value="">Select Property</option>
+          {Object.keys(segmentValues).map((propKey) => (
+            <option key={propKey} value={propKey}>
+              {propertyLabels[propKey] || propKey}
+            </option>
+          ))}
+        </select>
+        
+        {/* Value Selector - Shows dropdown of actual values with counts */}
+        <select
+          value={selectedValue}
+          onChange={(e) => setSelectedValue(e.target.value)}
+          className="text-xs bg-white border border-purple-300 rounded p-1.5 text-purple-900"
+          disabled={!selectedProperty}
+        >
+          <option value="">Select Value</option>
+          {availableValues && availableValues.length > 0 ? (
+            availableValues.map((val: any) => (
+              <option key={val.value} value={val.value}>
+                {val.label} {val.count ? `(${val.count.toLocaleString()})` : ''}
+              </option>
+            ))
+          ) : (
+            selectedProperty && <option value="" disabled>No data available</option>
+          )}
+        </select>
+      </div>
+      <button
+        onClick={handleAdd}
+        disabled={!selectedProperty || !selectedValue || !availableValues || availableValues.length === 0}
+        className="w-full text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+      >
+        ✓ Set Filter
+      </button>
+      {selectedProperty && availableValues && availableValues.length === 0 && (
+        <div className="text-[9px] text-amber-600 text-center">
+          ⚠️ No data for this property
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Custom Event Builder Form Component
+interface CustomEventBuilderFormProps {
+  eventSchema: any;
+  onSave: (template: {
+    template_name: string;
+    description?: string;
+    base_event_type: string;
+    filters: any[];
+    icon?: string;
+  }) => void;
+  onCancel: () => void;
+}
+
+const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSchema, onSave, onCancel }) => {
+  const [templateName, setTemplateName] = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const [baseEvent, setBaseEvent] = React.useState('');
+  const [icon, setIcon] = React.useState('📦');
+  const [filters, setFilters] = React.useState<any[]>([]);
+  
+  // Filter builder state
+  const [selectedProperty, setSelectedProperty] = React.useState('');
+  const [selectedOperator, setSelectedOperator] = React.useState('equals');
+  const [filterValue, setFilterValue] = React.useState('');
+  
+  const genericEvents = eventSchema?.generic_events || [];
+  const allProperties = eventSchema?.all_properties || [];
+  
+  const handleAddFilter = () => {
+    if (!selectedProperty || !filterValue) return;
+    
+    const newFilter = {
+      property: selectedProperty,
+      operator: selectedOperator,
+      value: filterValue
+    };
+    
+    setFilters([...filters, newFilter]);
+    setSelectedProperty('');
+    setFilterValue('');
+  };
+  
+  const handleRemoveFilter = (index: number) => {
+    setFilters(filters.filter((_, i) => i !== index));
+  };
+  
+  const handleSave = () => {
+    if (!templateName || !baseEvent) {
+      alert('Please provide a name and select a base event');
+      return;
+    }
+    
+    onSave({
+      template_name: templateName,
+      description,
+      base_event_type: baseEvent,
+      filters,
+      icon
+    });
+  };
+  
+  return (
+    <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      {/* Template Name */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Custom Event Name *
+        </label>
+        <input
+          type="text"
+          value={templateName}
+          onChange={(e) => setTemplateName(e.target.value)}
+          placeholder="e.g., Add-on Viewed"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+        />
+      </div>
+      
+      {/* Icon Picker */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Icon (Emoji)
+        </label>
+        <div className="flex gap-2">
+          {['📦', '🎁', '🛒', '💳', '✅', '❌', '📱', '💻', '🏠', '⭐'].map(emoji => (
+            <button
+              key={emoji}
+              onClick={() => setIcon(emoji)}
+              className={`text-2xl p-2 rounded-lg border-2 transition-all ${
+                icon === emoji ? 'border-purple-500 bg-purple-50' : 'border-slate-200 hover:border-purple-300'
+              }`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </div>
+      
+      {/* Description */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Description (Optional)
+        </label>
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="e.g., User viewed add-on options"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+        />
+      </div>
+      
+      {/* Base Event Type */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Base Event Type *
+        </label>
+        <select
+          value={baseEvent}
+          onChange={(e) => setBaseEvent(e.target.value)}
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+        >
+          <option value="">Select a base event...</option>
+          {genericEvents.map((event: any) => (
+            <option key={event.event_type} value={event.name}>
+              {event.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-slate-500 mt-1">
+          This is the generic event your custom event is based on
+        </p>
+      </div>
+      
+      {/* Filters */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-2">
+          Filters (Optional)
+        </label>
+        <p className="text-xs text-slate-500 mb-3">
+          Add filters to make your custom event more specific
+        </p>
+        
+        {/* Current Filters */}
+        {filters.length > 0 && (
+          <div className="mb-3 space-y-2">
+            {filters.map((filter, index) => (
+              <div key={index} className="flex items-center gap-2 p-2 bg-purple-50 border border-purple-200 rounded-lg text-sm">
+                <span className="font-medium text-purple-900">{filter.property}</span>
+                <span className="text-purple-500">{filter.operator}</span>
+                <span className="text-purple-700">{filter.value}</span>
+                <button
+                  onClick={() => handleRemoveFilter(index)}
+                  className="ml-auto text-red-500 hover:text-red-700"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        {/* Add Filter */}
+        <div className="space-y-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+          <div className="grid grid-cols-3 gap-2">
+            <select
+              value={selectedProperty}
+              onChange={(e) => setSelectedProperty(e.target.value)}
+              className="text-sm px-2 py-1.5 border border-slate-300 rounded"
+            >
+              <option value="">Property...</option>
+              {allProperties.map((prop: any) => (
+                <option key={prop.property} value={prop.property}>
+                  {prop.label || prop.property}
+                </option>
+              ))}
+            </select>
+            <select
+              value={selectedOperator}
+              onChange={(e) => setSelectedOperator(e.target.value)}
+              className="text-sm px-2 py-1.5 border border-slate-300 rounded"
+            >
+              <option value="equals">equals</option>
+              <option value="contains">contains</option>
+              <option value="starts_with">starts with</option>
+              <option value="greater_than">{'>'}</option>
+              <option value="less_than">{'<'}</option>
+            </select>
+            <input
+              type="text"
+              value={filterValue}
+              onChange={(e) => setFilterValue(e.target.value)}
+              placeholder="Value..."
+              className="text-sm px-2 py-1.5 border border-slate-300 rounded"
+            />
+          </div>
+          <button
+            onClick={handleAddFilter}
+            disabled={!selectedProperty || !filterValue}
+            className="w-full text-sm px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            + Add Filter
+          </button>
+        </div>
+      </div>
+      
+      {/* Actions */}
+      <div className="flex gap-3 pt-4 border-t border-slate-200">
+        <button
+          onClick={onCancel}
+          className="flex-1 px-4 py-2 border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={!templateName || !baseEvent}
+          className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+        >
+          Save Template
+        </button>
+      </div>
     </div>
   );
 };

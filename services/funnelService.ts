@@ -50,6 +50,7 @@ export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelS
         measure: config.measure || (config.counting_by === 'unique_users' ? 'guests' : 'guests'),
         window: config.window || `${config.completed_within} Days`,
         group_by: config.group_by || null,
+        segments: config.segments || [],  // Send user-defined segments
         date_range: config.global_filters?.date_range || null,
         global_filters: config.global_filters || null
       })
@@ -61,6 +62,9 @@ export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelS
 
     const result = await response.json();
     
+    // Check if we have segment data
+    const hasSegments = result.has_segments && result.data.some((item: any) => item.segments && Object.keys(item.segments).length > 0);
+    
     // Transform API response to FunnelStep format
     return result.data.map((item: any, idx: number) => ({
       id: config.steps[idx]?.id || idx.toString(),
@@ -71,7 +75,10 @@ export const fetchFunnelData = async (config: FunnelDefinition): Promise<FunnelS
       dropOffRate: item.drop_off_rate || 0,
       revenueAtRisk: item.revenue_at_risk || 0,
       avgTime: item.avg_time || `${Math.floor(Math.random() * 5) + 2}m ${Math.floor(Math.random() * 60)}s`, // Use real data from API
-      sparkline: Array.from({ length: 7 }, () => Math.random() * 20 + 40)
+      sparkline: Array.from({ length: 7 }, () => Math.random() * 20 + 40),
+      // Include segment data if available
+      segments: hasSegments ? item.segments : undefined,
+      hasSegments: hasSegments
     }));
   } catch (error) {
     console.error('Error fetching funnel data:', error);

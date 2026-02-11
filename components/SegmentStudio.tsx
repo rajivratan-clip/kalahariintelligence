@@ -11,10 +11,10 @@ import {
   Legend,
   ResponsiveContainer,
   RadarChart,
-  Radar,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
+  Radar, 
+  PolarGrid, 
+  PolarAngleAxis, 
+  PolarRadiusAxis, 
   Cell
 } from 'recharts';
 import { 
@@ -249,8 +249,8 @@ const SegmentStudio: React.FC<SegmentStudioProps> = ({ onExplain }) => {
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
-          </div>
-        </div>
+                 </div>
+             </div>
 
         {/* 2. SEGMENTED BY Block */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
@@ -261,7 +261,7 @@ const SegmentStudio: React.FC<SegmentStudioProps> = ({ onExplain }) => {
             <div>
               <h3 className="font-semibold text-slate-800 text-sm">Segmented By</h3>
               <p className="text-xs text-slate-500">Personas & Cohorts</p>
-            </div>
+             </div>
           </div>
 
           <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -324,7 +324,7 @@ const SegmentStudio: React.FC<SegmentStudioProps> = ({ onExplain }) => {
               </div>
             )}
           </div>
-        </div>
+      </div>
 
         {/* 3. MEASURED AS Block */}
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
@@ -465,9 +465,9 @@ const SegmentStudio: React.FC<SegmentStudioProps> = ({ onExplain }) => {
               <p className="text-sm text-amber-700">
                 This segment only converts with discounts. Trigger "Last Minute Deal" popups or retargeting 
                 campaigns with limited-time offers.
-              </p>
+                </p>
             </div>
-          </div>
+       </div>
         </div>
       )}
     </div>

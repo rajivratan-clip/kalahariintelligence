@@ -180,11 +180,11 @@ const AskAISidebar: React.FC<AskAISidebarProps> = ({ isOpen, onClose, context })
         ) : (
           // Messages view
           <div className="p-4 space-y-4 relative z-10">
-            {messages.map((msg) => (
-              <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                     msg.role === 'model' ? 'bg-slate-100/80 text-slate-600 backdrop-blur-sm' : 'bg-slate-200/80 text-slate-600 backdrop-blur-sm'
-                }`}>
+            }`}>
                     {msg.role === 'model' ? (
                       <img 
                         src={CLIPERACT_LOGO_URL} 
@@ -194,9 +194,9 @@ const AskAISidebar: React.FC<AskAISidebarProps> = ({ isOpen, onClose, context })
                     ) : (
                       <User size={16} />
                     )}
-                </div>
+            </div>
                 <div className={`max-w-[80%] p-3 rounded-lg text-sm leading-relaxed ${
-                    msg.role === 'model' 
+                msg.role === 'model' 
                     ? 'bg-white/80 backdrop-blur-sm text-slate-700 border border-slate-200/50 prose prose-sm prose-slate max-w-none shadow-sm' 
                     : 'bg-slate-100/80 backdrop-blur-sm text-slate-700 border border-slate-200/50'
                 }`}>
@@ -213,30 +213,30 @@ const AskAISidebar: React.FC<AskAISidebarProps> = ({ isOpen, onClose, context })
                          code: ({node, ...props}) => <code className="bg-slate-100 text-slate-700 px-1 py-0.5 rounded text-xs border border-slate-200" {...props} />,
                        }}
                      >
-                       {msg.text}
+               {msg.text}
                      </ReactMarkdown>
                    ) : (
                      msg.text
                    )}
-                </div>
-              </div>
-            ))}
-            {isProcessing && (
-                <div className="flex gap-3">
+            </div>
+          </div>
+        ))}
+        {isProcessing && (
+            <div className="flex gap-3">
                      <div className="w-8 h-8 rounded-full bg-slate-100/80 text-slate-600 flex items-center justify-center backdrop-blur-sm">
                         <img 
                           src={CLIPERACT_LOGO_URL} 
                           alt=""
                           className="h-4 w-auto"
                         />
-                     </div>
+                 </div>
                      <div className="bg-white/80 backdrop-blur-sm border border-slate-200/50 p-3 rounded-lg flex items-center gap-2 text-sm text-slate-600 shadow-sm">
                         <Loader2 size={14} className="animate-spin text-slate-600" />
                         Analyzing...
-                     </div>
-                </div>
-            )}
-            <div ref={messagesEndRef} />
+                 </div>
+            </div>
+        )}
+        <div ref={messagesEndRef} />
           </div>
         )}
 

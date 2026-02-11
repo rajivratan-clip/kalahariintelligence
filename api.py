@@ -6,6 +6,8 @@ from database import run_query
 import os
 import json
 import urllib.request
+import uuid
+from datetime import datetime
 
 app = FastAPI(title="ResortIQ ClickHouse API")
 
@@ -45,6 +47,172 @@ def query(sql: str) -> List[Any]:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ============================================================================
+# EVENT TRACKING ENDPOINT
+# ============================================================================
+
+class TrackEventRequest(BaseModel):
+    """Model for tracking events with all 65+ filterable properties"""
+    # Core event properties
+    event_type: str
+    user_id: str
+    session_id: str
+    timestamp: Optional[str] = None
+    
+    # Page properties
+    page_url: Optional[str] = ""
+    page_title: Optional[str] = ""
+    page_category: Optional[str] = ""
+    referrer_url: Optional[str] = ""
+    
+    # Interaction properties
+    element_selector: Optional[str] = ""
+    element_text: Optional[str] = ""
+    element_type: Optional[str] = ""
+    interaction_type: Optional[str] = "navigation"
+    is_rage_click: Optional[bool] = False
+    is_dead_click: Optional[bool] = False
+    is_hesitation_click: Optional[bool] = False
+    hover_duration_ms: Optional[int] = 0
+    click_count_on_element: Optional[int] = 0
+    
+    # Engagement properties
+    scroll_depth_percent: Optional[int] = 0
+    scroll_speed_pixels_per_sec: Optional[int] = 0
+    time_on_page_seconds: Optional[int] = 0
+    video_interaction: Optional[str] = ""
+    file_download_name: Optional[str] = ""
+    
+    # Form properties
+    form_field_name: Optional[str] = ""
+    form_field_value_length: Optional[int] = 0
+    form_corrections_count: Optional[int] = 0
+    form_autofill_detected: Optional[bool] = False
+    form_validation_error: Optional[str] = ""
+    
+    # Booking/Hospitality properties
+    funnel_step: Optional[int] = 0
+    selected_location: Optional[str] = ""
+    selected_checkin_date: Optional[str] = ""
+    selected_checkout_date: Optional[str] = ""
+    nights_count: Optional[int] = 0
+    selected_room_type: Optional[str] = ""
+    selected_guests_adults: Optional[int] = 0
+    selected_guests_children: Optional[int] = 0
+    price_viewed_amount: Optional[float] = 0
+    discount_code_attempted: Optional[str] = ""
+    discount_code_success: Optional[bool] = False
+    addon_viewed: Optional[str] = ""
+    addon_added: Optional[bool] = False
+    currency_code: Optional[str] = "USD"
+    guest_segment: Optional[str] = "Unknown"
+    
+    # Search properties
+    search_query: Optional[str] = ""
+    search_results_count: Optional[int] = 0
+    search_filter_applied: Optional[str] = ""
+    
+    # Device properties
+    device_type: Optional[str] = ""
+    browser: Optional[str] = ""
+    os: Optional[str] = "Unknown"
+    screen_resolution: Optional[str] = ""
+    viewport_width: Optional[int] = 0
+    viewport_height: Optional[int] = 0
+    connection_speed: Optional[str] = "medium"
+    
+    # Marketing properties
+    utm_source: Optional[str] = ""
+    utm_medium: Optional[str] = ""
+    utm_campaign: Optional[str] = ""
+    utm_content: Optional[str] = ""
+    is_returning_visitor: Optional[bool] = False
+    
+    # Performance properties
+    page_load_time_ms: Optional[int] = 0
+    api_response_time_ms: Optional[int] = 0
+
+
+@app.post("/api/track")
+async def track_event(event: TrackEventRequest) -> Dict[str, Any]:
+    """
+    Receives tracking events from frontend/tracking script and inserts into ClickHouse.
+    This populates all 65+ filterable properties.
+    """
+    try:
+        # Generate event_id
+        event_id = str(uuid.uuid4())
+        
+        # Use current timestamp if not provided
+        if event.timestamp:
+            timestamp = event.timestamp
+        else:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        
+        # Escape single quotes in string fields to prevent SQL injection
+        def escape_str(s):
+            return str(s).replace("'", "''") if s else ''
+        
+        # Build INSERT query with ALL properties
+        insert_query = f"""
+            INSERT INTO raw_events (
+                event_id, session_id, user_id, timestamp, event_type,
+                page_url, page_title, page_category, referrer_url,
+                element_selector, element_text, element_type, interaction_type,
+                is_rage_click, is_dead_click, is_hesitation_click, hover_duration_ms, click_count_on_element,
+                scroll_depth_percent, scroll_speed_pixels_per_sec, time_on_page_seconds, 
+                video_interaction, file_download_name,
+                form_field_name, form_field_value_length, form_corrections_count, 
+                form_autofill_detected, form_validation_error,
+                funnel_step, selected_location, selected_checkin_date, selected_checkout_date,
+                nights_count, selected_room_type, selected_guests_adults, selected_guests_children,
+                price_viewed_amount, discount_code_attempted, discount_code_success,
+                addon_viewed, addon_added, currency_code, guest_segment,
+                search_query, search_results_count, search_filter_applied,
+                device_type, browser, os, screen_resolution, 
+                viewport_width, viewport_height, connection_speed,
+                utm_source, utm_medium, utm_campaign, utm_content, is_returning_visitor,
+                page_load_time_ms, api_response_time_ms
+            ) VALUES (
+                '{event_id}', '{escape_str(event.session_id)}', '{escape_str(event.user_id)}', '{timestamp}', '{escape_str(event.event_type)}',
+                '{escape_str(event.page_url)}', '{escape_str(event.page_title)}', '{escape_str(event.page_category)}', '{escape_str(event.referrer_url)}',
+                '{escape_str(event.element_selector)}', '{escape_str(event.element_text)}', '{escape_str(event.element_type)}', '{escape_str(event.interaction_type)}',
+                {1 if event.is_rage_click else 0}, {1 if event.is_dead_click else 0}, 
+                {1 if event.is_hesitation_click else 0}, {event.hover_duration_ms}, {event.click_count_on_element},
+                {event.scroll_depth_percent}, {event.scroll_speed_pixels_per_sec}, {event.time_on_page_seconds},
+                '{escape_str(event.video_interaction)}', '{escape_str(event.file_download_name)}',
+                '{escape_str(event.form_field_name)}', {event.form_field_value_length}, {event.form_corrections_count},
+                {1 if event.form_autofill_detected else 0}, '{escape_str(event.form_validation_error)}',
+                {event.funnel_step}, '{escape_str(event.selected_location)}', '{escape_str(event.selected_checkin_date)}', 
+                '{escape_str(event.selected_checkout_date)}', {event.nights_count}, '{escape_str(event.selected_room_type)}',
+                {event.selected_guests_adults}, {event.selected_guests_children},
+                {event.price_viewed_amount}, '{escape_str(event.discount_code_attempted)}', 
+                {1 if event.discount_code_success else 0},
+                '{escape_str(event.addon_viewed)}', {1 if event.addon_added else 0}, '{escape_str(event.currency_code)}', '{escape_str(event.guest_segment)}',
+                '{escape_str(event.search_query)}', {event.search_results_count}, '{escape_str(event.search_filter_applied)}',
+                '{escape_str(event.device_type)}', '{escape_str(event.browser)}', '{escape_str(event.os)}', '{escape_str(event.screen_resolution)}',
+                {event.viewport_width}, {event.viewport_height}, '{escape_str(event.connection_speed)}',
+                '{escape_str(event.utm_source)}', '{escape_str(event.utm_medium)}', '{escape_str(event.utm_campaign)}', '{escape_str(event.utm_content)}',
+                {1 if event.is_returning_visitor else 0},
+                {event.page_load_time_ms}, {event.api_response_time_ms}
+            )
+        """
+        
+        # Execute insert
+        run_query(insert_query)
+        
+        return {
+            "status": "success",
+            "event_id": event_id,
+            "timestamp": timestamp,
+            "message": "Event tracked successfully"
+        }
+        
+    except Exception as exc:
+        print(f"[Track Event] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to track event: {str(exc)}")
+
+
 @app.get("/api/metadata/schema")
 async def get_schema() -> Dict[str, Any]:
     """
@@ -74,11 +242,14 @@ async def get_schema() -> Dict[str, Any]:
             {"property": "is_dead_click", "type": "boolean", "label": "Is Dead Click", "category": "Interaction"},
             {"property": "is_hesitation_click", "type": "boolean", "label": "Is Hesitation Click", "category": "Interaction"},
             {"property": "hover_duration_ms", "type": "number", "label": "Hover Duration (ms)", "category": "Interaction"},
+            {"property": "click_count_on_element", "type": "number", "label": "Click Count", "category": "Interaction"},
             
-            # Scroll Properties
+            # Engagement Properties
             {"property": "scroll_depth_percent", "type": "number", "label": "Scroll Depth (%)", "category": "Engagement"},
             {"property": "scroll_speed_pixels_per_sec", "type": "number", "label": "Scroll Speed (px/s)", "category": "Engagement"},
             {"property": "time_on_page_seconds", "type": "number", "label": "Time on Page (s)", "category": "Engagement"},
+            {"property": "video_interaction", "type": "string", "label": "Video Interaction", "category": "Engagement"},
+            {"property": "file_download_name", "type": "string", "label": "File Downloaded", "category": "Engagement"},
             
             # Form Properties
             {"property": "form_field_name", "type": "string", "label": "Form Field Name", "category": "Form"},
@@ -101,14 +272,19 @@ async def get_schema() -> Dict[str, Any]:
             {"property": "discount_code_success", "type": "boolean", "label": "Discount Applied", "category": "Booking"},
             {"property": "addon_viewed", "type": "string", "label": "Add-on Viewed", "category": "Booking"},
             {"property": "addon_added", "type": "boolean", "label": "Add-on Added", "category": "Booking"},
+            {"property": "currency_code", "type": "string", "label": "Currency", "category": "Booking"},
+            {"property": "guest_segment", "type": "string", "label": "Guest Segment", "category": "Booking"},
             
             # Search Properties
             {"property": "search_query", "type": "string", "label": "Search Query", "category": "Search"},
             {"property": "search_results_count", "type": "number", "label": "Search Results", "category": "Search"},
+            {"property": "search_filter_applied", "type": "string", "label": "Search Filters Applied", "category": "Search"},
             
             # Device/Browser Properties
             {"property": "device_type", "type": "string", "label": "Device Type", "category": "Device"},
             {"property": "browser", "type": "string", "label": "Browser", "category": "Device"},
+            {"property": "os", "type": "string", "label": "Operating System", "category": "Device"},
+            {"property": "screen_resolution", "type": "string", "label": "Screen Resolution", "category": "Device"},
             {"property": "viewport_width", "type": "number", "label": "Viewport Width", "category": "Device"},
             {"property": "viewport_height", "type": "number", "label": "Viewport Height", "category": "Device"},
             {"property": "connection_speed", "type": "string", "label": "Connection Speed", "category": "Device"},
@@ -117,6 +293,7 @@ async def get_schema() -> Dict[str, Any]:
             {"property": "utm_source", "type": "string", "label": "UTM Source", "category": "Marketing"},
             {"property": "utm_medium", "type": "string", "label": "UTM Medium", "category": "Marketing"},
             {"property": "utm_campaign", "type": "string", "label": "UTM Campaign", "category": "Marketing"},
+            {"property": "utm_content", "type": "string", "label": "UTM Content", "category": "Marketing"},
             {"property": "is_returning_visitor", "type": "boolean", "label": "Returning Visitor", "category": "Marketing"},
             
             # Performance Properties
@@ -152,9 +329,35 @@ async def get_schema() -> Dict[str, Any]:
             {"name": "Confirmation", "funnel_step": 8, "properties": ["page_url", "price_viewed_amount"]},
         ]
         
+        # Fetch custom event templates
+        custom_events = []
+        try:
+            custom_query = """
+                SELECT template_id, template_name, description, base_event_type, filters, icon
+                FROM custom_event_templates
+                WHERE user_id = 'default_user'
+                ORDER BY created_at DESC
+            """
+            custom_rows = run_query(custom_query)
+            for row in custom_rows:
+                filters_json = json.loads(row[4]) if row[4] else []
+                custom_events.append({
+                    "template_id": row[0],
+                    "name": row[1],
+                    "description": row[2],
+                    "base_event_type": row[3],
+                    "filters": filters_json,
+                    "icon": row[5],
+                    "category": "custom"
+                })
+        except Exception as e:
+            print(f"Warning: Could not fetch custom events: {e}")
+            # Don't fail the whole request if custom events can't be fetched
+        
         return {
             "generic_events": generic_events,
             "hospitality_events": hospitality_events,
+            "custom_events": custom_events,  # NEW: Include custom events
             "all_properties": all_properties,
             "db_event_types": db_event_types,  # Raw event_type values from DB
             "group_by_options": ["device_type", "browser", "utm_source", "utm_medium", "guest_segment"]
@@ -164,12 +367,9 @@ async def get_schema() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Schema query error: {str(exc)}")
 
 
-"""
-Event-Driven Funnel Analysis using windowFunnel
-
-This endpoint uses ClickHouse's windowFunnel function to calculate funnels
-based on event sequences, not hardcoded funnel_step values.
-"""
+# ============================================================================
+# PYDANTIC MODELS FOR CUSTOM EVENT TEMPLATES
+# ============================================================================
 
 class EventFilter(BaseModel):
     property: str  # e.g., "page_url", "element_text", "funnel_step"
@@ -177,11 +377,194 @@ class EventFilter(BaseModel):
     value: Any  # The filter value
 
 
+class CustomEventTemplate(BaseModel):
+    """Model for user-defined custom event templates"""
+    template_id: Optional[str] = None  # Auto-generated if not provided
+    user_id: str = "default_user"
+    template_name: str
+    description: Optional[str] = ""
+    base_event_type: str  # e.g., "Page Viewed", "Click"
+    base_event_category: str = "generic"
+    filters: List[EventFilter] = []  # Filters that define this custom event
+    icon: str = "📦"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# ============================================================================
+# CUSTOM EVENT TEMPLATES API
+# ============================================================================
+
+@app.get("/api/custom-events")
+async def get_custom_events(user_id: str = Query(default="default_user")) -> Dict[str, Any]:
+    """
+    Get all custom event templates for a user.
+    
+    Returns:
+    - List of custom event templates
+    """
+    try:
+        query = f"""
+            SELECT 
+                template_id,
+                user_id,
+                template_name,
+                description,
+                base_event_type,
+                base_event_category,
+                filters,
+                icon,
+                created_at,
+                updated_at
+            FROM custom_event_templates
+            WHERE user_id = '{user_id}'
+            ORDER BY created_at DESC
+        """
+        
+        rows = run_query(query)
+        
+        templates = []
+        for row in rows:
+            # Parse the filters JSON string
+            filters_json = json.loads(row[6]) if row[6] else []
+            
+            templates.append({
+                "template_id": row[0],
+                "user_id": row[1],
+                "template_name": row[2],
+                "description": row[3],
+                "base_event_type": row[4],
+                "base_event_category": row[5],
+                "filters": filters_json,
+                "icon": row[7],
+                "created_at": str(row[8]) if row[8] else None,
+                "updated_at": str(row[9]) if row[9] else None,
+            })
+        
+        return {"custom_events": templates, "count": len(templates)}
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error fetching custom events: {str(exc)}")
+
+
+@app.post("/api/custom-events")
+async def create_custom_event(template: CustomEventTemplate) -> Dict[str, Any]:
+    """
+    Create a new custom event template.
+    
+    Body:
+    - template_name: Name of the custom event
+    - description: Optional description
+    - base_event_type: Base generic event (e.g., "Page Viewed")
+    - filters: List of filters that define this event
+    - icon: Optional emoji/icon
+    
+    Returns:
+    - Created template with template_id
+    """
+    try:
+        # Generate template_id if not provided
+        template_id = template.template_id or str(uuid.uuid4())
+        
+        # Convert filters to JSON string
+        filters_json = json.dumps([f.dict() for f in template.filters])
+        
+        # Escape single quotes in strings for SQL
+        template_name_escaped = template.template_name.replace("'", "''")
+        description_escaped = (template.description or "").replace("'", "''")
+        base_event_type_escaped = template.base_event_type.replace("'", "''")
+        icon_escaped = template.icon.replace("'", "''")
+        filters_escaped = filters_json.replace("'", "''")
+        
+        # Insert query
+        insert_query = f"""
+            INSERT INTO custom_event_templates (
+                template_id,
+                user_id,
+                template_name,
+                description,
+                base_event_type,
+                base_event_category,
+                filters,
+                icon,
+                created_at,
+                updated_at
+            ) VALUES (
+                '{template_id}',
+                '{template.user_id}',
+                '{template_name_escaped}',
+                '{description_escaped}',
+                '{base_event_type_escaped}',
+                '{template.base_event_category}',
+                '{filters_escaped}',
+                '{icon_escaped}',
+                now(),
+                now()
+            )
+        """
+        
+        run_query(insert_query)
+        
+        return {
+            "success": True,
+            "template_id": template_id,
+            "template_name": template.template_name,
+            "message": f"Custom event '{template.template_name}' created successfully!"
+        }
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error creating custom event: {str(exc)}")
+
+
+@app.delete("/api/custom-events/{template_id}")
+async def delete_custom_event(template_id: str, user_id: str = Query(default="default_user")) -> Dict[str, Any]:
+    """
+    Delete a custom event template.
+    
+    Parameters:
+    - template_id: ID of the template to delete
+    - user_id: User ID (for authorization)
+    
+    Returns:
+    - Success message
+    """
+    try:
+        delete_query = f"""
+            DELETE FROM custom_event_templates
+            WHERE template_id = '{template_id}'
+              AND user_id = '{user_id}'
+        """
+        
+        run_query(delete_query)
+        
+        return {
+            "success": True,
+            "template_id": template_id,
+            "message": "Custom event deleted successfully!"
+        }
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error deleting custom event: {str(exc)}")
+
+
+"""
+Event-Driven Funnel Analysis using windowFunnel
+
+This endpoint uses ClickHouse's windowFunnel function to calculate funnels
+based on event sequences, not hardcoded funnel_step values.
+"""
+
 class FunnelStepRequest(BaseModel):
     event_category: str = "generic"  # "generic" or "hospitality"
     event_type: str  # For generic: "page_view", "click", etc. For hospitality: "room_select", "location_select", etc.
     label: Optional[str] = None  # User-friendly label
     filters: Optional[List[EventFilter]] = None  # List of filters (property, operator, value)
+
+
+class SegmentComparison(BaseModel):
+    id: str
+    name: str  # User-defined segment name
+    filters: List[EventFilter]  # Filters that define this segment
 
 
 class FunnelRequest(BaseModel):
@@ -192,6 +575,7 @@ class FunnelRequest(BaseModel):
     measure: Optional[str] = None
     window: Optional[str] = None
     group_by: Optional[str] = None
+    segments: Optional[List[SegmentComparison]] = None  # User-defined segments for comparison
     date_range: Optional[Dict[str, str]] = None
     global_filters: Optional[Dict[str, Any]] = None
 
@@ -307,12 +691,27 @@ def map_ui_to_sql(step: FunnelStepRequest) -> str:
     """
     The "Brain Layer" - Translates UI event definitions into ClickHouse WHERE conditions.
     
-    Handles both Generic Events (event_type based) and Hospitality Events (funnel_step based).
+    Handles Generic Events (event_type based), Hospitality Events (funnel_step based),
+    and Custom Events (user-defined templates).
     """
     base_condition = ""
     
+    # Check if it's a custom event (category = "custom")
+    if step.event_category == "custom":
+        # Custom events are stored as templates - we need to use their base_event_type
+        # The filters from the custom template will be added via step.filters
+        # For now, treat it like a generic event with the base_event_type
+        event_type_safe = step.event_type.replace("'", "''")
+        
+        # Check if the base_event_type is in EVENT_MAPPING
+        if step.event_type in EVENT_MAPPING:
+            mapping = EVENT_MAPPING[step.event_type]
+            base_condition = mapping["base"]
+        else:
+            # Assume it's a direct event_type
+            base_condition = f"event_type = '{event_type_safe}'"
     # Check if it's a mapped event name (from EVENT_MAPPING)
-    if step.event_type in EVENT_MAPPING:
+    elif step.event_type in EVENT_MAPPING:
         mapping = EVENT_MAPPING[step.event_type]
         base_condition = mapping["base"]
     elif step.event_category == "hospitality":
@@ -428,8 +827,11 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
             """
             location_join = "INNER JOIN sessions s_loc ON re.session_id = s_loc.session_id"
         
+        # Check if we have user-defined segments (takes priority over group_by)
+        has_segments = request.segments and len(request.segments) > 0
+        
         # Group by clause
-        group_by_col = request.group_by if request.group_by else None
+        group_by_col = request.group_by if request.group_by and not has_segments else None
         group_by_clause = ""
         group_by_select = ""
         if group_by_col:
@@ -439,6 +841,199 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
             join_clause = "INNER JOIN sessions s ON re.session_id = s.session_id"
         else:
             join_clause = ""
+        
+        # Handle user-defined segments (custom segment comparison)
+        if has_segments:
+            # Run funnel query for each segment with its specific filters
+            all_segment_counts: Dict[int, Dict[str, float]] = {}  # step_index -> {segment_name: count}
+            
+            for segment in request.segments:
+                # Determine which properties are being filtered
+                # Some properties are in sessions table, others in raw_events
+                session_properties = {'guest_segment', 'traffic_source', 'browser', 'is_returning_visitor'}
+                needs_session_join = any(f.property in session_properties for f in segment.filters)
+                
+                # Build WHERE clause for this segment's filters
+                segment_filter_conditions = []
+                for seg_filter in segment.filters:
+                    # Prefix property with table alias if needed
+                    if needs_session_join and seg_filter.property in session_properties:
+                        # Replace property name with s.property for session table
+                        filter_str = build_filter_condition(seg_filter)
+                        filter_str = filter_str.replace(seg_filter.property, f's.{seg_filter.property}')
+                        segment_filter_conditions.append(filter_str)
+                    else:
+                        # Use re.property for raw_events table
+                        filter_str = build_filter_condition(seg_filter)
+                        filter_str = filter_str.replace(seg_filter.property, f're.{seg_filter.property}')
+                        segment_filter_conditions.append(filter_str)
+                
+                segment_where = ""
+                if segment_filter_conditions:
+                    segment_where = f"AND ({' AND '.join(segment_filter_conditions)})"
+                
+                # Build query for this specific segment
+                if counting_method == "unique_users":
+                    if needs_session_join:
+                        segment_query = f"""
+                            SELECT 
+                                funneled.funnel_level,
+                                count(DISTINCT re.user_id) AS reached_count
+                            FROM (
+                                SELECT 
+                                    re.session_id,
+                                    windowFunnel({window_seconds})(
+                                        toDateTime(timestamp),
+                                        {conditions}
+                                    ) AS funnel_level
+                                FROM raw_events re
+                                INNER JOIN sessions s ON re.session_id = s.session_id
+                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                  {global_where}
+                                  {segment_where}
+                                GROUP BY re.session_id
+                            ) AS funneled
+                            INNER JOIN raw_events re ON funneled.session_id = re.session_id
+                            INNER JOIN sessions s ON re.session_id = s.session_id
+                            WHERE funneled.funnel_level > 0
+                              {segment_where}
+                            GROUP BY funneled.funnel_level
+                            ORDER BY funneled.funnel_level
+                        """
+                    else:
+                        segment_query = f"""
+                            SELECT 
+                                funneled.funnel_level,
+                                count(DISTINCT re.user_id) AS reached_count
+                            FROM (
+                                SELECT 
+                                    re.session_id,
+                                    windowFunnel({window_seconds})(
+                                        toDateTime(timestamp),
+                                        {conditions}
+                                    ) AS funnel_level
+                                FROM raw_events re
+                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                  {global_where}
+                                  {segment_where}
+                                GROUP BY re.session_id
+                            ) AS funneled
+                            INNER JOIN raw_events re ON funneled.session_id = re.session_id
+                            WHERE funneled.funnel_level > 0
+                              {segment_where}
+                            GROUP BY funneled.funnel_level
+                            ORDER BY funneled.funnel_level
+                        """
+                else:
+                    # For sessions or events
+                    count_expr_seg = "count(DISTINCT funneled.session_id)" if counting_method == "sessions" else "count(*)"
+                    if needs_session_join:
+                        segment_query = f"""
+                            SELECT 
+                                funnel_level,
+                                {count_expr_seg} AS reached_count
+                            FROM (
+                                SELECT 
+                                    re.session_id,
+                                    windowFunnel({window_seconds})(
+                                        toDateTime(timestamp),
+                                        {conditions}
+                                    ) AS funnel_level
+                                FROM raw_events re
+                                INNER JOIN sessions s ON re.session_id = s.session_id
+                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                  {global_where}
+                                  {segment_where}
+                                GROUP BY re.session_id
+                            ) AS funneled
+                            WHERE funnel_level > 0
+                            GROUP BY funnel_level
+                            ORDER BY funnel_level
+                        """
+                    else:
+                        segment_query = f"""
+                            SELECT 
+                                funnel_level,
+                                {count_expr_seg} AS reached_count
+                            FROM (
+                                SELECT 
+                                    session_id,
+                                    windowFunnel({window_seconds})(
+                                        toDateTime(timestamp),
+                                        {conditions}
+                                    ) AS funnel_level
+                                FROM raw_events re
+                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                  {global_where}
+                                  {segment_where}
+                                GROUP BY session_id
+                            ) AS funneled
+                            WHERE funnel_level > 0
+                            GROUP BY funnel_level
+                            ORDER BY funnel_level
+                        """
+                
+                # Execute query for this segment
+                segment_rows = run_query(segment_query)
+                
+                # Process results for this segment
+                for row in segment_rows:
+                    funnel_level = int(row[0])
+                    count_val = float(row[1])
+                    
+                    # For each level reached, count users who reached that level or higher
+                    for step_idx in range(1, step_count + 1):
+                        if funnel_level >= step_idx:
+                            if step_idx not in all_segment_counts:
+                                all_segment_counts[step_idx] = {}
+                            all_segment_counts[step_idx][segment.name] = all_segment_counts[step_idx].get(segment.name, 0) + count_val
+            
+            # Build response with segment data
+            result = []
+            for idx, step in enumerate(request.steps):
+                step_num = idx + 1
+                segment_data = all_segment_counts.get(step_num, {})
+                
+                # Calculate totals across all segments
+                current_count = sum(segment_data.values()) if segment_data else 0
+                prev_count = sum(all_segment_counts.get(step_num - 1, {}).values()) if step_num > 1 else current_count
+                next_count = sum(all_segment_counts.get(step_num + 1, {}).values()) if step_num < step_count else current_count
+                
+                # Conversion rate (aggregate)
+                conversion_rate = (current_count / prev_count * 100) if prev_count > 0 else 100.0
+                drop_off_rate = 100.0 - conversion_rate if step_num > 1 else 0.0
+                
+                # Revenue at risk
+                dropped_count = max(0.0, current_count - next_count)
+                avg_booking_value = 260.0
+                revenue_at_risk = dropped_count * avg_booking_value
+                
+                # Average time (reuse existing logic)
+                avg_time_seconds = 120 + (idx * 30)
+                minutes = int(avg_time_seconds // 60)
+                seconds = int(avg_time_seconds % 60)
+                avg_time_str = f"{minutes}m {seconds}s"
+                
+                result.append({
+                    "step_name": step.label or step.event_type,
+                    "event_type": step.event_type,
+                    "visitors": int(current_count),
+                    "conversion_rate": round(conversion_rate, 1),
+                    "drop_off_rate": round(drop_off_rate, 1),
+                    "revenue_at_risk": round(revenue_at_risk, 2),
+                    "avg_time": avg_time_str,
+                    "avg_time_seconds": round(avg_time_seconds, 1),
+                    "median_time_seconds": round(avg_time_seconds, 1),
+                    "segments": {seg_name: int(count) for seg_name, count in segment_data.items()},
+                })
+            
+            return {
+                "data": result,
+                "view_type": request.view_type,
+                "completed_within": request.completed_within,
+                "counting_by": request.counting_by,
+                "has_segments": True
+            }
         
         # Build the windowFunnel query
         # windowFunnel is applied per session, then we aggregate
@@ -709,6 +1304,146 @@ async def get_available_locations() -> List[str]:
         return ["Wisconsin", "Pocono", "Sandusky", "Round Rock"]
 
 
+@app.get("/api/metadata/segment-values")
+async def get_segment_values() -> Dict[str, Any]:
+    """
+    Get actual available values for segment properties from the database.
+    Only returns properties with actual data to avoid empty segments.
+    """
+    try:
+        result = {}
+        
+        # 1. Device Type (from sessions table) - lowercase values
+        device_query = """
+            SELECT DISTINCT device_type, count() AS cnt
+            FROM sessions
+            WHERE device_type != '' AND device_type != 'Unknown'
+            GROUP BY device_type
+            HAVING cnt > 1000
+            ORDER BY cnt DESC
+        """
+        device_rows = run_query(device_query)
+        if device_rows:
+            result['device_type'] = [
+                {"value": row[0], "label": row[0].title(), "count": int(row[1])}
+                for row in device_rows if row[0]
+            ]
+        
+        # 2. Guest Segment (actual values from sessions table)
+        segment_query = """
+            SELECT DISTINCT guest_segment, count() AS cnt
+            FROM sessions
+            WHERE guest_segment != '' AND guest_segment != 'Unknown'
+            GROUP BY guest_segment
+            HAVING cnt > 1000
+            ORDER BY cnt DESC
+        """
+        segment_rows = run_query(segment_query)
+        if segment_rows:
+            result['guest_segment'] = [
+                {
+                    "value": row[0],
+                    "label": row[0].replace('_', ' ').title(),
+                    "count": int(row[1])
+                }
+                for row in segment_rows if row[0]
+            ]
+        
+        # 3. Selected Location (from raw_events - lowercase underscore format)
+        location_query = """
+            SELECT DISTINCT selected_location, count() AS cnt
+            FROM raw_events
+            WHERE selected_location != '' 
+                AND selected_location NOT LIKE 'Kalahari%'
+            GROUP BY selected_location
+            HAVING cnt > 10000
+            ORDER BY cnt DESC
+        """
+        location_rows = run_query(location_query)
+        if location_rows:
+            result['selected_location'] = [
+                {
+                    "value": row[0],
+                    "label": row[0].replace('_', ' ').title(),
+                    "count": int(row[1])
+                }
+                for row in location_rows if row[0]
+            ]
+        
+        # 4. Traffic Source (use traffic_source column, not utm_source)
+        traffic_query = """
+            SELECT DISTINCT traffic_source, count() AS cnt
+            FROM sessions
+            WHERE traffic_source != '' AND traffic_source != 'Unknown'
+            GROUP BY traffic_source
+            HAVING cnt > 1000
+            ORDER BY cnt DESC
+        """
+        traffic_rows = run_query(traffic_query)
+        if traffic_rows:
+            result['traffic_source'] = [
+                {
+                    "value": row[0],
+                    "label": row[0].replace('_', ' ').title(),
+                    "count": int(row[1])
+                }
+                for row in traffic_rows if row[0]
+            ]
+        
+        # 5. Browser (from sessions table)
+        browser_query = """
+            SELECT DISTINCT browser, count() AS cnt
+            FROM sessions
+            WHERE browser != '' AND browser != 'Unknown'
+            GROUP BY browser
+            HAVING cnt > 1000
+            ORDER BY cnt DESC
+        """
+        browser_rows = run_query(browser_query)
+        if browser_rows:
+            result['browser'] = [
+                {"value": row[0], "label": row[0], "count": int(row[1])}
+                for row in browser_rows if row[0]
+            ]
+        
+        # 6. Visitor Type (from sessions table)
+        visitor_query = """
+            SELECT 
+                CASE 
+                    WHEN is_returning_visitor = 1 OR is_returning_visitor = true THEN 'true'
+                    ELSE 'false'
+                END AS visitor_type,
+                count() AS cnt
+            FROM sessions
+            GROUP BY visitor_type
+            HAVING cnt > 1000
+            ORDER BY cnt DESC
+        """
+        visitor_rows = run_query(visitor_query)
+        if visitor_rows:
+            result['is_returning_visitor'] = [
+                {
+                    "value": row[0],
+                    "label": "Returning Visitors" if row[0] == 'true' else "New Visitors",
+                    "count": int(row[1])
+                }
+                for row in visitor_rows if row[0]
+            ]
+        
+        return {
+            "segment_properties": result,
+            "total_sessions": 180000,
+            "last_updated": "now()",
+            "note": "Only shows properties with sufficient data (>1000 sessions for reliability)"
+        }
+        
+    except Exception as exc:
+        print(f"[Segment Values] Error: {exc}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch segment values: {str(exc)}")
+
+
 @app.get("/api/funnel/friction")
 async def get_friction_data(
     step_name: Optional[str] = Query(None),
@@ -973,19 +1708,23 @@ async def get_funnel_latency(request: FunnelRequest) -> Dict[str, Any]:
                 median = max(0, float(row[col_idx + 1])) if row[col_idx + 1] is not None else 0
                 p90 = max(0, float(row[col_idx + 2])) if row[col_idx + 2] is not None else 0
                 p95 = max(0, float(row[col_idx + 3])) if row[col_idx + 3] is not None else 0
-                avg_time = max(0, float(row[col_idx + 4])) if row[col_idx + 4] is not None else 0
+                avg_time = max(0, float(row[col_idx + 4])) if row[col_idx + 4] is not None and row[col_idx + 4] > 0 else 0
                 sample_size = int(row[col_idx + 5]) if row[col_idx + 5] is not None and row[col_idx + 5] > 0 else 0
                 
                 col_idx += 6
                 
                 # Bottleneck detection: If cumulative time is > 5 minutes, flag it
-                is_bottleneck = median > 300 and sample_size > 0
+                is_bottleneck = (median > 300 or p95 > 300) and sample_size > 0
+                
+                # Use best available time metric (prefer median, fallback to avg, then p95)
+                best_time = median if median > 0 else (avg_time if avg_time > 0 else p95)
                 
                 result.append({
                     "step_name": request.steps[step_idx].label or request.steps[step_idx].event_type,
                     "step_index": step_idx + 1,
                     "avg_time_seconds": round(avg_time, 1),
                     "median_time_seconds": round(median, 1),
+                    "best_time_seconds": round(best_time, 1),  # NEW: Best available time
                     "p10_seconds": round(p10, 1),
                     "p90_seconds": round(p90, 1),
                     "p95_seconds": round(p95, 1),
@@ -1000,6 +1739,7 @@ async def get_funnel_latency(request: FunnelRequest) -> Dict[str, Any]:
                     "step_index": step_idx + 1,
                     "avg_time_seconds": 0,
                     "median_time_seconds": 0,
+                    "best_time_seconds": 0,
                     "p10_seconds": 0,
                     "p90_seconds": 0,
                     "p95_seconds": 0,
