@@ -2698,6 +2698,11 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
             
             # ============ CALCULATE METRICS BASED ON MEASUREMENT TYPE ============
             
+            interval_func = "toDate(timestamp)" if request.interval == "day" else (
+                "toStartOfWeek(timestamp)" if request.interval == "week" else "toStartOfMonth(timestamp)"
+            )
+            interval_alias = "date"
+
             if request.measurement == 'uniques':
                 # Unique users who performed this event
                 query = f"""
@@ -2718,10 +2723,10 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 unique_sessions = int(rows[0][2]) if rows and rows[0] else 0
                 print(f"[Segmentation] Metrics: unique_users={metric_value}, total_events={total_events}")
                 
-                # Get time series
+                # Get time series (respect interval: day/week/month)
                 time_series_query = f"""
                     SELECT 
-                        toDate(timestamp) as date,
+                        {interval_func} as date,
                         uniqExact(user_id) as unique_users
                     FROM raw_events
                     WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
@@ -2755,7 +2760,7 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 # Time series
                 time_series_query = f"""
                     SELECT 
-                        toDate(timestamp) as date,
+                        {interval_func} as date,
                         count(*) as event_count
                     FROM raw_events
                     WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
@@ -2770,27 +2775,27 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 ]
                 
             elif request.measurement == 'average':
-                # Average events per user
+                # Average events per user (guard against divide-by-zero)
                 query = f"""
                     SELECT 
                         count(*) as total_events,
                         uniqExact(user_id) as unique_users,
-                        (count(*) / uniqExact(user_id)) as avg_per_user
+                        if(uniqExact(user_id) > 0, count(*) / uniqExact(user_id), 0) as avg_per_user
                     FROM raw_events
                     WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
                       AND {event_where}
                 """
                 rows = run_query(query)
                 
-                metric_value = round(float(rows[0][2]), 2) if rows and rows[0] else 0
+                metric_value = round(float(rows[0][2] or 0), 2) if rows and rows[0] else 0
                 total_events = int(rows[0][0]) if rows and rows[0] else 0
                 unique_users = int(rows[0][1]) if rows and rows[0] else 0
                 
-                # Time series
+                # Time series (guard divide-by-zero)
                 time_series_query = f"""
                     SELECT 
-                        toDate(timestamp) as date,
-                        count(*) / uniqExact(user_id) as avg_per_user
+                        {interval_func} as date,
+                        if(uniqExact(user_id) > 0, count(*) / uniqExact(user_id), 0) as avg_per_user
                     FROM raw_events
                     WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
                       AND {event_where}
@@ -2799,18 +2804,18 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 """
                 time_series_rows = run_query(time_series_query)
                 time_series = [
-                    {"date": str(row[0]), "value": round(float(row[1]), 2)}
+                    {"date": str(row[0]), "value": round(float(row[1] or 0), 2)}
                     for row in time_series_rows
                 ]
                 
             elif request.measurement == 'revenue_per_user':
-                # Revenue metrics per user (from sessions)
+                # Revenue metrics per user (from sessions, guard divide-by-zero)
                 query = f"""
                     SELECT 
                         uniqExact(s.user_id) as unique_users,
                         sum(s.conversion_value) as total_revenue,
                         avg(s.conversion_value) as avg_revenue_per_session,
-                        sum(s.conversion_value) / uniqExact(s.user_id) as revenue_per_user
+                        if(uniqExact(s.user_id) > 0, sum(s.conversion_value) / uniqExact(s.user_id), 0) as revenue_per_user
                     FROM raw_events e
                     JOIN sessions s ON e.session_id = s.session_id
                     WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
@@ -2823,11 +2828,14 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 unique_users = int(rows[0][0]) if rows and rows[0] else 0
                 total_revenue = round(float(rows[0][1]), 2) if rows and rows[0] else 0
                 
-                # Time series
+                # Time series (guard divide-by-zero)
+                interval_join = "toDate(e.timestamp)" if request.interval == "day" else (
+                    "toStartOfWeek(e.timestamp)" if request.interval == "week" else "toStartOfMonth(e.timestamp)"
+                )
                 time_series_query = f"""
                     SELECT 
-                        toDate(e.timestamp) as date,
-                        sum(s.conversion_value) / uniqExact(s.user_id) as revenue_per_user
+                        {interval_join} as date,
+                        if(uniqExact(s.user_id) > 0, sum(s.conversion_value) / uniqExact(s.user_id), 0) as revenue_per_user
                     FROM raw_events e
                     JOIN sessions s ON e.session_id = s.session_id
                     WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
@@ -2847,20 +2855,29 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 time_series = []
             
             # ============ GROUP BY ANALYSIS ============
+            # Use sessions JOIN for group_by: traffic_source, guest_segment live in sessions;
+            # device_type, browser, is_returning_visitor exist in both - use sessions for consistency
             breakdown = []
             if request.group_by:
                 group_by_col = request.group_by
-                
+                if group_by_col == "is_returning_visitor":
+                    group_select = "if(s.is_returning_visitor = 1 OR s.is_returning_visitor = true, 'Returning', 'New')"
+                    group_condition = "1=1"
+                else:
+                    group_select = f"s.{group_by_col}"
+                    group_condition = f"(s.{group_by_col} != '' AND s.{group_by_col} != 'Unknown')"
+
                 if request.measurement == 'uniques':
                     breakdown_query = f"""
                         SELECT 
-                            {group_by_col} as group_name,
-                            uniqExact(user_id) as unique_users,
+                            {group_select} as group_name,
+                            uniqExact(e.user_id) as unique_users,
                             count(*) as total_events
-                        FROM raw_events
-                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                        FROM raw_events e
+                        INNER JOIN sessions s ON e.session_id = s.session_id
+                        WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
                           AND {event_where}
-                          AND {group_by_col} != ''
+                          AND {group_condition}
                         GROUP BY group_name
                         ORDER BY unique_users DESC
                         LIMIT 10
@@ -2868,13 +2885,14 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 elif request.measurement == 'event_totals':
                     breakdown_query = f"""
                         SELECT 
-                            {group_by_col} as group_name,
+                            {group_select} as group_name,
                             count(*) as event_count,
-                            uniqExact(user_id) as unique_users
-                        FROM raw_events
-                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                            uniqExact(e.user_id) as unique_users
+                        FROM raw_events e
+                        INNER JOIN sessions s ON e.session_id = s.session_id
+                        WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
                           AND {event_where}
-                          AND {group_by_col} != ''
+                          AND {group_condition}
                         GROUP BY group_name
                         ORDER BY event_count DESC
                         LIMIT 10
@@ -2882,18 +2900,23 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
                 else:
                     breakdown_query = f"""
                         SELECT 
-                            {group_by_col} as group_name,
+                            {group_select} as group_name,
                             count(*) as event_count
-                        FROM raw_events
-                        WHERE timestamp >= now() - INTERVAL {request.time_period} DAY
+                        FROM raw_events e
+                        INNER JOIN sessions s ON e.session_id = s.session_id
+                        WHERE e.timestamp >= now() - INTERVAL {request.time_period} DAY
                           AND {event_where}
-                          AND {group_by_col} != ''
+                          AND {group_condition}
                         GROUP BY group_name
                         ORDER BY event_count DESC
                         LIMIT 10
                     """
-                
-                breakdown_rows = run_query(breakdown_query)
+
+                try:
+                    breakdown_rows = run_query(breakdown_query)
+                except Exception as b_err:
+                    print(f"[Segmentation] Breakdown query error for group_by={group_by_col}: {b_err}")
+                    breakdown_rows = []
                 for row in breakdown_rows:
                     breakdown.append({
                         "group": str(row[0]),
@@ -2913,6 +2936,7 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
         response_data = {
             "measurement": request.measurement,
             "time_period_days": request.time_period,
+            "interval": request.interval,
             "group_by": request.group_by,
             "results": results
         }
@@ -2922,6 +2946,328 @@ async def get_segmentation_analysis(request: SegmentationRequest) -> Dict[str, A
     except Exception as exc:
         print(f"[Segmentation Analysis] Error: {exc}")
         raise HTTPException(status_code=500, detail=f"Segmentation analysis error: {str(exc)}")
+
+
+# ============================================================================
+# BEHAVIORAL SEGMENTS - Session-based behavioral classification
+# ============================================================================
+
+class BehavioralSegmentsRequest(BaseModel):
+    """Request for behavioral segmentation analysis"""
+    time_period: int = 30
+    interval: str = "day"
+    segment_ids: Optional[List[str]] = None  # Filter to specific segments, or all if None
+
+
+BEHAVIORAL_SEGMENT_DEFINITIONS = {
+    "researcher": {
+        "label": "Researchers",
+        "description": "High engagement, many page views, low conversion",
+        "color": "#8b5cf6",
+    },
+    "bargain_hunter": {
+        "label": "Bargain Hunters",
+        "description": "High price checks, discount code attempts",
+        "color": "#f59e0b",
+    },
+    "last_minute": {
+        "label": "Last-Minute Bookers",
+        "description": "Short decision time, high urgency",
+        "color": "#06b6d4",
+    },
+    "high_friction": {
+        "label": "High-Friction Droppers",
+        "description": "High friction score, rage clicks, no conversion",
+        "color": "#ef4444",
+    },
+    "high_intent_non_booker": {
+        "label": "High-Intent Non-Bookers",
+        "description": "High intent but didn't convert",
+        "color": "#ec4899",
+    },
+    "converter": {
+        "label": "Converters",
+        "description": "Completed booking",
+        "color": "#10b981",
+    },
+    "other": {
+        "label": "Other",
+        "description": "Sessions not matching other segments",
+        "color": "#64748b",
+    },
+}
+
+
+@app.post("/api/analytics/behavioral-segments")
+async def get_behavioral_segments(request: BehavioralSegmentsRequest) -> Dict[str, Any]:
+    """
+    Behavioral Segmentation - Classify sessions by behavior patterns.
+    
+    Uses session + raw_events data to assign each session to a canonical segment:
+    - researcher: high pages/duration, low conversion
+    - bargain_hunter: high price checks / discount attempts
+    - last_minute: high urgency, short session
+    - high_friction: friction_score > 0.6, no conversion
+    - high_intent_non_booker: high intent, no conversion
+    - converter: completed booking
+    - other: fallback
+    
+    Returns per-segment counts, conversion rate, revenue, time series.
+    """
+    try:
+        days = request.time_period
+        interval_func = "toDate" if request.interval == "day" else (
+            "toStartOfWeek" if request.interval == "week" else "toStartOfMonth"
+        )
+        interval_alias = "date"
+
+        # Sessions table has pre-aggregated metrics: page_views_count, total_events, duration_seconds,
+        # max_scroll_depth, rage_clicks_count, dead_clicks_count, price_checks_count,
+        # discount_code_attempts, intent_score, friction_score, urgency_score, price_sensitivity_score
+        session_agg = f"""
+        WITH classified AS (
+            SELECT 
+                session_id,
+                user_id,
+                converted,
+                conversion_value,
+                toFloat64OrDefault(potential_revenue, 0.0) AS potential_revenue,
+                start_time,
+                CASE
+                    WHEN converted = 1 THEN 'converter'
+                    WHEN coalesce(friction_score, 0) > 0.6 AND converted = 0 THEN 'high_friction'
+                    WHEN coalesce(intent_score, 0) >= 60 AND converted = 0 THEN 'high_intent_non_booker'
+                    WHEN coalesce(price_sensitivity_score, 0) > 0.7 OR coalesce(price_checks_count, 0) >= 3 OR coalesce(discount_code_attempts, 0) > 0 THEN 'bargain_hunter'
+                    WHEN coalesce(urgency_score, 0) > 0.7 AND coalesce(duration_seconds, 0) < 600 THEN 'last_minute'
+                    WHEN coalesce(page_views_count, 0) >= 5 AND coalesce(duration_seconds, 0) > 120 AND converted = 0 THEN 'researcher'
+                    ELSE 'other'
+                END AS segment_type
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {days} DAY
+        )
+        """
+
+        # Summary by segment
+        segment_ids_filter = ""
+        if request.segment_ids and len(request.segment_ids) > 0:
+            seg_list = ", ".join(f"'{s}'" for s in request.segment_ids)
+            segment_ids_filter = f"AND segment_type IN ({seg_list})"
+
+        summary_query = f"""
+        {session_agg}
+        SELECT 
+            segment_type,
+            count(*) AS sessions,
+            countIf(converted = 1) AS conversions,
+            round(countIf(converted = 1) / count(*) * 100, 1) AS conversion_rate_pct,
+            round(sum(conversion_value), 2) AS revenue,
+            round(avg(potential_revenue), 2) AS avg_potential_revenue
+        FROM classified
+        WHERE 1=1 {segment_ids_filter}
+        GROUP BY segment_type
+        ORDER BY sessions DESC
+        """
+        summary_rows = run_query(summary_query)
+        total_sessions = sum(int(r[1]) for r in summary_rows)
+
+        segments_summary = []
+        for row in summary_rows:
+            sessions = int(row[1])
+            pct = round(sessions / total_sessions * 100, 1) if total_sessions > 0 else 0
+            segments_summary.append({
+                "segment_type": row[0],
+                "label": BEHAVIORAL_SEGMENT_DEFINITIONS.get(row[0], {}).get("label", row[0]),
+                "sessions": sessions,
+                "conversions": int(row[2]),
+                "conversion_rate_pct": float(row[3]) if row[3] else 0,
+                "revenue": float(row[4]) if row[4] else 0,
+                "avg_potential_revenue": float(row[5]) if row[5] else 0,
+                "pct_of_total": pct,
+            })
+
+        # Time series by segment
+        time_series_query = f"""
+        {session_agg}
+        SELECT 
+            {interval_func}(start_time) AS {interval_alias},
+            segment_type,
+            count(*) AS sessions
+        FROM classified
+        WHERE 1=1 {segment_ids_filter}
+        GROUP BY {interval_alias}, segment_type
+        ORDER BY {interval_alias}, segment_type
+        """
+        ts_rows = run_query(time_series_query)
+
+        # Group time series by segment for charting
+        time_series_by_segment: Dict[str, List[Dict[str, Any]]] = {}
+        for row in ts_rows:
+            dt, seg, cnt = str(row[0]), row[1], int(row[2])
+            if seg not in time_series_by_segment:
+                time_series_by_segment[seg] = []
+            time_series_by_segment[seg].append({"date": dt, "value": cnt})
+
+        return {
+            "mode": "behavioral",
+            "time_period_days": days,
+            "interval": request.interval,
+            "total_sessions": total_sessions,
+            "segments": segments_summary,
+            "time_series_by_segment": time_series_by_segment,
+            "segment_definitions": BEHAVIORAL_SEGMENT_DEFINITIONS,
+        }
+    except Exception as exc:
+        print(f"[Behavioral Segments] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Behavioral segments error: {str(exc)}")
+
+
+# ============================================================================
+# GUEST / USER SEGMENTS - Guest profile, value tier, acquisition
+# ============================================================================
+
+class GuestSegmentsRequest(BaseModel):
+    """Request for guest/user segmentation analysis"""
+    time_period: int = 30
+    interval: str = "day"
+    segment_ids: Optional[List[str]] = None
+
+
+GUEST_SEGMENT_DEFINITIONS = {
+    "family": {"label": "Families", "filter": "guest_segment = 'family_with_young_kids'", "color": "#3b82f6"},
+    "luxury": {"label": "Luxury Seekers", "filter": "guest_segment = 'luxury'", "color": "#8b5cf6"},
+    "couple": {"label": "Couples", "filter": "guest_segment = 'couple'", "color": "#ec4899"},
+    "business": {"label": "Business Travelers", "filter": "guest_segment = 'business'", "color": "#10b981"},
+    "returning": {"label": "Returning Guests", "filter": "is_returning_visitor = true", "color": "#14b8a6"},
+    "new": {"label": "New Visitors", "filter": "is_returning_visitor = false OR is_returning_visitor IS NULL", "color": "#06b6d4"},
+    "mobile": {"label": "Mobile Guests", "filter": "lower(device_type) = 'mobile'", "color": "#f59e0b"},
+    "desktop": {"label": "Desktop Guests", "filter": "lower(device_type) = 'desktop'", "color": "#64748b"},
+    "high_value": {"label": "High-Value", "filter": "potential_revenue >= 1500 OR conversion_value >= 1500", "color": "#22c55e"},
+    "price_sensitive": {"label": "Price-Sensitive", "filter": "price_sensitivity_score > 0.7", "color": "#eab308"},
+    "other": {"label": "Other", "filter": "1=1", "color": "#94a3b8"},
+}
+
+
+@app.post("/api/analytics/guest-segments")
+async def get_guest_segments(request: GuestSegmentsRequest) -> Dict[str, Any]:
+    """
+    Guest/User Segmentation - Segment by guest profile, value, acquisition.
+    
+    Uses sessions table: guest_segment, device_type, traffic_source, 
+    is_returning_visitor, potential_revenue, conversion_value, price_sensitivity_score.
+    
+    Returns per-segment counts, conversion rate, revenue, time series.
+    """
+    try:
+        days = request.time_period
+        interval_func = "toDate" if request.interval == "day" else (
+            "toStartOfWeek" if request.interval == "week" else "toStartOfMonth"
+        )
+        interval_alias = "date"
+
+        # Build segment CASE: priority order (guest_segment first, then visitor/device/value)
+        # Sessions columns: guest_segment, device_type, is_returning_visitor, price_sensitivity_score,
+        # potential_revenue (Decimal), conversion_value (Float32)
+        case_sql = """
+        CASE
+            WHEN guest_segment = 'family_with_young_kids' THEN 'family'
+            WHEN guest_segment = 'luxury' THEN 'luxury'
+            WHEN guest_segment = 'couple' THEN 'couple'
+            WHEN guest_segment = 'business' THEN 'business'
+            WHEN is_returning_visitor = 1 OR is_returning_visitor = true THEN 'returning'
+            WHEN is_returning_visitor = 0 OR is_returning_visitor = false OR is_returning_visitor IS NULL THEN 'new'
+            WHEN lower(toString(device_type)) = 'mobile' THEN 'mobile'
+            WHEN lower(toString(device_type)) = 'desktop' THEN 'desktop'
+            WHEN coalesce(price_sensitivity_score, 0) > 0.7 THEN 'price_sensitive'
+            WHEN toFloat64OrDefault(potential_revenue, 0.0) >= 1500 OR coalesce(conversion_value, 0) >= 1500 THEN 'high_value'
+            ELSE 'other'
+        END
+        """
+
+        segment_ids_filter = ""
+        if request.segment_ids and len(request.segment_ids) > 0:
+            seg_list = ", ".join(f"'{s}'" for s in request.segment_ids)
+            segment_ids_filter = f"AND segment_type IN ({seg_list})"
+
+        base_query = f"""
+        WITH classified AS (
+            SELECT 
+                session_id,
+                user_id,
+                converted,
+                conversion_value,
+                toFloat64OrDefault(potential_revenue, 0.0) AS potential_revenue,
+                start_time,
+                {case_sql} AS segment_type
+            FROM sessions
+            WHERE start_time >= now() - INTERVAL {days} DAY
+        )
+        """
+
+        summary_query = f"""
+        {base_query}
+        SELECT 
+            segment_type,
+            count(*) AS sessions,
+            countIf(converted) AS conversions,
+            round(countIf(converted = 1) / count(*) * 100, 1) AS conversion_rate_pct,
+            round(sum(conversion_value), 2) AS revenue,
+            round(avg(potential_revenue), 2) AS avg_potential_revenue
+        FROM classified
+        WHERE 1=1 {segment_ids_filter}
+        GROUP BY segment_type
+        ORDER BY sessions DESC
+        """
+        summary_rows = run_query(summary_query)
+        total_sessions = sum(int(r[1]) for r in summary_rows)
+
+        segments_summary = []
+        for row in summary_rows:
+            sessions = int(row[1])
+            pct = round(sessions / total_sessions * 100, 1) if total_sessions > 0 else 0
+            label = GUEST_SEGMENT_DEFINITIONS.get(row[0], {}).get("label", row[0])
+            segments_summary.append({
+                "segment_type": row[0],
+                "label": label,
+                "sessions": sessions,
+                "conversions": int(row[2]),
+                "conversion_rate_pct": float(row[3]) if row[3] else 0,
+                "revenue": float(row[4]) if row[4] else 0,
+                "avg_potential_revenue": float(row[5]) if row[5] else 0,
+                "pct_of_total": pct,
+            })
+
+        time_series_query = f"""
+        {base_query}
+        SELECT 
+            {interval_func}(start_time) AS {interval_alias},
+            segment_type,
+            count(*) AS sessions
+        FROM classified
+        WHERE 1=1 {segment_ids_filter}
+        GROUP BY {interval_alias}, segment_type
+        ORDER BY {interval_alias}, segment_type
+        """
+        ts_rows = run_query(time_series_query)
+
+        time_series_by_segment: Dict[str, List[Dict[str, Any]]] = {}
+        for row in ts_rows:
+            dt, seg, cnt = str(row[0]), row[1], int(row[2])
+            if seg not in time_series_by_segment:
+                time_series_by_segment[seg] = []
+            time_series_by_segment[seg].append({"date": dt, "value": cnt})
+
+        return {
+            "mode": "guest",
+            "time_period_days": days,
+            "interval": request.interval,
+            "total_sessions": total_sessions,
+            "segments": segments_summary,
+            "time_series_by_segment": time_series_by_segment,
+            "segment_definitions": {k: {"label": v["label"], "color": v["color"]} for k, v in GUEST_SEGMENT_DEFINITIONS.items()},
+        }
+    except Exception as exc:
+        print(f"[Guest Segments] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Guest segments error: {str(exc)}")
 
 
 # -------------------------------

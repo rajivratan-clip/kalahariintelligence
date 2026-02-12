@@ -707,7 +707,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                     >
               <Plus size={16} /> Add Step
                     </button>
-            </div>
+                </div>
 
           {/* Segment Comparison Section */}
           <div className="pt-4 border-t border-slate-200 mt-4">
@@ -722,10 +722,10 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                 </button>
               )}
             </div>
-            
+
             <div className="text-[10px] text-slate-500 mb-3 p-2 bg-slate-50 rounded border border-slate-200">
               Each segment = one filter. Compare "Mobile Users" vs "Desktop Users" vs "Families"
-            </div>
+                        </div>
             
             {/* Segment List */}
             {config.segments && config.segments.length > 0 && (
@@ -746,7 +746,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                       >
                         <X size={12} />
                       </button>
-                    </div>
+                     </div>
                     
                     {/* Segment Filter - Only ONE filter per segment */}
                     {segment.filters && segment.filters.length > 0 ? (
@@ -755,7 +755,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                           <span className="font-medium text-purple-900">{segment.filters[0].property}</span>
                           <span className="text-purple-400">=</span>
                           <span className="font-mono text-purple-700">{String(segment.filters[0].value)}</span>
-                        </div>
+                </div>
                         <button
                           onClick={() => handleRemoveSegmentFilter(segment.id, 0)}
                           className="text-purple-500 hover:text-purple-700"
@@ -763,7 +763,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                         >
                           <X size={12} />
                         </button>
-                      </div>
+            </div>
                     ) : (
                       /* No filter yet - show filter builder */
                       editingSegmentId === segment.id ? (
@@ -1077,7 +1077,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                 </div>
             </div>
           )}
-        </div>
+            </div>
 
         {/* Main Chart */}
         <div className="flex-1 p-6 pt-0 overflow-y-auto">
@@ -1179,13 +1179,13 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                     
                     return (
                       <>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart
+                         <ResponsiveContainer width="100%" height="100%">
+                            <BarChart 
                             data={segmentChartData}
                             margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
                             barCategoryGap="15%"
                             barGap={4}
-                          >
+                            >
                             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
                             <XAxis 
                               dataKey="name"
@@ -1472,7 +1472,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                       </>
                     );
                   })()}
-                  </div>
+                    </div>
                 )}
 
                  {activeTab === 'overTime' && (
@@ -1634,14 +1634,14 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                 ) : (
                   <div className="flex items-center justify-center h-[400px]">
                     <div className="text-center text-slate-400">
-                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                             <Clock size={48} className="mx-auto mb-4 opacity-50" />
                       <p className="text-sm">
                         {data.length > 0 ? 'Calculating time metrics...' : 'Configure funnel to see time data'}
                       </p>
+                         </div>
                     </div>
-                  </div>
                 )}
-              </div>
+            </div>
                 )}
 
             {activeTab === 'pathAnalysis' && (
