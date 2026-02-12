@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Home,
   Folder,
@@ -13,13 +13,13 @@ import {
   Search,
   Menu,
   Bell,
+  Sparkles,
 } from 'lucide-react';
-import FunnelLab from './components/FunnelLab';
-import SegmentStudio from './components/SegmentStudio';
 import FrictionForensic from './components/FrictionForensic';
 import AnalyticsStudio from './components/AnalyticsStudio';
 import AskAISidebar from './components/AskAISidebar';
-import { ViewMode, AiContext } from './types';
+import { ViewMode, AiContext, AnalyticsConfigUpdate } from './types';
+import { useAiOrchestrator } from './engines/useAiOrchestrator';
 
 const SIDEBAR_BG = '#0947A4';
 
@@ -75,12 +75,25 @@ type NavKey =
 const SIDEBAR_WIDTH = 280;
 const SIDEBAR_COLLAPSED_WIDTH = 72;
 
+/** Ref for Analytics Studio to register config updates from AI guided build */
+type ConfigApplicator = (updates: AnalyticsConfigUpdate) => void;
+
 const App = () => {
-  const [activeView, setActiveView] = useState<ViewMode>('funnel');
-  const [activeNavKey, setActiveNavKey] = useState<NavKey>('funnel');
+  // Default to Analytics Studio as the primary workspace
+  const [activeView, setActiveView] = useState<ViewMode>('analytics');
+  const [activeNavKey, setActiveNavKey] = useState<NavKey>('analytics');
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [aiContext, setAiContext] = useState<AiContext | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const applyConfigRef = useRef<ConfigApplicator | null>(null);
+  const [buildSuccessToast, setBuildSuccessToast] = useState<string | null>(null);
+  
+  const { getActiveSession, ensureDefaultSession } = useAiOrchestrator();
+
+  // Ensure default session exists on mount
+  useEffect(() => {
+    ensureDefaultSession();
+  }, [ensureDefaultSession]);
 
   const handleExplain = (title: string, data: unknown) => {
     setAiContext({
@@ -109,8 +122,6 @@ const App = () => {
     { key: 'video-generator', label: 'Video Generator', icon: VideoGeneratorIcon, customIcon: true },
     { key: 'billing', label: 'Billing & Plan', icon: CreditCard },
     { key: 'analytics', label: '⭐ Analytics Studio', icon: LayoutDashboard, view: 'analytics' },
-    { key: 'funnel', label: 'Funnel Lab', icon: LayoutDashboard, view: 'funnel' },
-    { key: 'segment', label: 'Segment Studio', icon: Users, view: 'segment' },
     { key: 'friction', label: 'Friction Forensic', icon: Activity, view: 'friction' },
   ];
 
@@ -257,6 +268,14 @@ const App = () => {
           </div>
 
           <div className="flex items-center gap-4 ml-4">
+            <button
+              onClick={() => setIsAiOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-purple-600 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
+              aria-label="Open AI Assistant"
+            >
+              <Sparkles size={18} />
+              <span className="hidden sm:inline">Ask AI</span>
+            </button>
             <button className="relative text-slate-400 hover:text-slate-600" aria-label="Notifications">
               <Bell size={20} />
               <span className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full" />
@@ -268,14 +287,35 @@ const App = () => {
         </header>
 
         <main className="flex-1 overflow-hidden relative">
-          {activeView === 'analytics' && <AnalyticsStudio />}
-          {activeView === 'funnel' && <FunnelLab onExplain={handleExplain} />}
-          {activeView === 'segment' && <SegmentStudio onExplain={handleExplain} />}
+          {activeView === 'analytics' && (
+            <AnalyticsStudio
+              onExplain={handleExplain}
+              onOpenAskAI={() => setIsAiOpen(true)}
+              applyConfigRef={applyConfigRef}
+            />
+          )}
           {activeView === 'friction' && <FrictionForensic />}
         </main>
       </div>
 
-      <AskAISidebar isOpen={isAiOpen} onClose={() => setIsAiOpen(false)} context={aiContext} />
+      <AskAISidebar
+        isOpen={isAiOpen}
+        onClose={() => setIsAiOpen(false)}
+        context={aiContext}
+        activeView={activeView}
+        currentViewConfig={getActiveSession()?.currentViewConfig}
+        onApplyConfig={(updates) => {
+          applyConfigRef.current?.(updates);
+          const stepCount = updates.funnel_steps?.length ?? 0;
+          if (updates.analysis_type === 'funnel' && stepCount > 0) {
+            setBuildSuccessToast(`✓ Funnel built with ${stepCount} steps`);
+            setTimeout(() => setBuildSuccessToast(null), 4000);
+          } else if (updates.analysis_type === 'segmentation') {
+            setBuildSuccessToast('✓ Segmentation chart ready');
+            setTimeout(() => setBuildSuccessToast(null), 4000);
+          }
+        }}
+      />
 
       {isAiOpen && (
         <div
@@ -283,6 +323,20 @@ const App = () => {
           onClick={() => setIsAiOpen(false)}
           aria-hidden="true"
         />
+      )}
+
+      {/* Build success toast */}
+      {buildSuccessToast && (
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-6 py-3 bg-emerald-600 text-white rounded-lg shadow-lg font-medium flex items-center gap-2"
+          role="status"
+          aria-live="polite"
+        >
+          <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+          </svg>
+          {buildSuccessToast}
+        </div>
       )}
     </div>
   );

@@ -101,3 +101,86 @@ export interface AiContext {
   data: any;
   prompt: string;
 }
+
+/** Updates the AI can apply to build charts (guided build flow) */
+export interface AnalyticsConfigUpdate {
+  /** High-level: which analysis surface to control */
+  analysis_type?: 'funnel' | 'segmentation';
+
+  /** Shared: \"Measured as\" / metric selection */
+  measurement?: string;
+
+  /** Funnel-specific: step configuration */
+  funnel_steps?: Array<{
+    id: string;
+    label: string;
+    event_type: string;
+    event_category: 'generic' | 'hospitality';
+  }>;
+
+  /** Funnel-specific: advanced configuration knobs */
+  funnel_view_type?: FunnelDefinition['view_type'];
+  funnel_completed_within?: number;
+  funnel_counting_by?: FunnelDefinition['counting_by'];
+  funnel_order?: FunnelDefinition['order'];
+  funnel_group_by?: FunnelDefinition['group_by'];
+  funnel_segments?: SegmentComparison[];
+  funnel_global_filters?: FunnelDefinition['global_filters'];
+
+  /** Segmentation-specific: which mode to use (event / behavioral / guest) */
+  segment_mode?: 'event' | 'behavioral' | 'guest';
+
+  /** Segmentation-specific: event-based config (when segment_mode === 'event') */
+  segment_events?: Array<{
+    id: string;
+    event_type: string;
+    event_category: 'generic' | 'hospitality' | 'custom';
+    filters?: EventFilter[];
+    label?: string;
+  }>;
+  segment_measurement?: string;
+  segment_group_by?: string | null;
+  segment_time_period_days?: number;
+  segment_interval?: 'day' | 'week' | 'month';
+}
+
+/** AI Intelligence Layer Types */
+export type LayoutTemplate =
+  | 'SINGLE_CHART'
+  | 'COMPARISON_GRID'
+  | 'EXECUTIVE_SUMMARY_DASHBOARD';
+
+export interface AiReasoning {
+  observation: string;
+  prediction: string;
+  action_score: number; // 0-100 urgency
+}
+
+export interface ViewConfig {
+  id: string;
+  analysis_type?: 'funnel' | 'segmentation' | 'retention' | 'paths';
+  measurement?: string;
+  funnel_definition?: FunnelDefinition;
+  segmentation_state?: {
+    mode?: 'event' | 'behavioral' | 'guest';
+    events?: any[];
+    measurement?: string;
+    group_by?: string | null;
+  };
+  layout_template: LayoutTemplate;
+  ai_reasoning?: AiReasoning;
+  created_at?: string;
+}
+
+/** Enhanced AI response with view configuration */
+export interface AiEngineResponse {
+  markdown: string; // Chat response text
+  view_config?: ViewConfig; // Optional view configuration
+  config_updates?: AnalyticsConfigUpdate; // Backward compatible config updates
+  proactive_insights?: Array<{
+    title: string;
+    message: string;
+    action_score: number;
+    suggested_action?: string;
+  }>;
+}

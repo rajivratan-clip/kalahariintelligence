@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { Plus, X, TrendingUp, Users, BarChart3, Calendar, Filter, Brain, User, Zap } from 'lucide-react';
+import { Plus, X, TrendingUp, Users, BarChart3, Calendar, Filter, Brain, User, Zap, Sparkles } from 'lucide-react';
 import { EventFilter } from '../types';
 
 type SegmentMode = 'event' | 'behavioral' | 'guest';
@@ -15,6 +15,16 @@ interface SegmentationEvent {
 
 interface SegmentationViewProps {
   eventSchema: any;
+  onExplain?: (title: string, data: unknown) => void;
+  onExplainPayloadReady?: (getter: (() => { title: string; data: unknown } | null) | null) => void;
+  injectedSegmentMode?: 'event' | 'behavioral' | 'guest' | null;
+  onInjectedSegmentModeConsumed?: () => void;
+  /** Optional injections from AI-guided build */
+  injectedMeasurement?: string | null;
+  injectedGroupBy?: string | null;
+  injectedTimePeriodDays?: number | null;
+  injectedInterval?: 'day' | 'week' | 'month' | null;
+  injectedEvents?: SegmentationEvent[] | null;
 }
 
 interface SegmentationResult {
@@ -69,7 +79,18 @@ const GUEST_SEGMENT_CHIPS = [
   { id: 'other', label: 'Other' },
 ];
 
-const SegmentationView: React.FC<SegmentationViewProps> = ({ eventSchema }) => {
+const SegmentationView: React.FC<SegmentationViewProps> = ({
+  eventSchema,
+  onExplain,
+  onExplainPayloadReady,
+  injectedSegmentMode,
+  onInjectedSegmentModeConsumed,
+  injectedMeasurement,
+  injectedGroupBy,
+  injectedTimePeriodDays,
+  injectedInterval,
+  injectedEvents,
+}) => {
   const [segmentMode, setSegmentMode] = useState<SegmentMode>('event');
   
   const [events, setEvents] = useState<SegmentationEvent[]>([
@@ -202,6 +223,71 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({ eventSchema }) => {
     fetchData();
   }, [segmentMode, events, measurement, timePeriod, groupBy, interval, selectedBehavioralSegments, selectedGuestSegments]);
 
+  // Apply injected segment mode from AI guided build
+  useEffect(() => {
+    if (injectedSegmentMode) {
+      setSegmentMode(injectedSegmentMode);
+      onInjectedSegmentModeConsumed?.();
+    }
+  }, [injectedSegmentMode]);
+
+  // Apply injected measurement / groupBy / timePeriod / interval / events from AI guided build
+  useEffect(() => {
+    if (injectedMeasurement) {
+      setMeasurement(injectedMeasurement);
+    }
+  }, [injectedMeasurement]);
+
+  useEffect(() => {
+    if (typeof injectedGroupBy !== 'undefined' && injectedGroupBy !== null) {
+      setGroupBy(injectedGroupBy);
+    }
+  }, [injectedGroupBy]);
+
+  useEffect(() => {
+    if (typeof injectedTimePeriodDays === 'number' && injectedTimePeriodDays > 0) {
+      setTimePeriod(injectedTimePeriodDays);
+    }
+  }, [injectedTimePeriodDays]);
+
+  useEffect(() => {
+    if (injectedInterval) {
+      setInterval(injectedInterval);
+    }
+  }, [injectedInterval]);
+
+  useEffect(() => {
+    if (injectedEvents && injectedEvents.length > 0) {
+      setEvents(injectedEvents);
+    }
+  }, [injectedEvents]);
+
+  // Register explain payload for parent (Analytics Studio header "Ask AI")
+  useEffect(() => {
+    if (!onExplainPayloadReady) return;
+    const getter = () => {
+      const payload: { title: string; data: unknown } = {
+        title: 'Segmentation Analysis',
+        data: {
+          segment_mode: segmentMode,
+          measurement,
+          time_period_days: timePeriod,
+          group_by: groupBy,
+          interval,
+          events: segmentMode === 'event' ? events : undefined,
+          event_results: segmentMode === 'event' && data.length > 0 ? data : undefined,
+          behavioral_segments: segmentMode === 'behavioral' && behavioralData ? behavioralData : undefined,
+          guest_segments: segmentMode === 'guest' && guestData ? guestData : undefined,
+          total_sessions: segmentMode === 'behavioral' ? behavioralData?.total_sessions : segmentMode === 'guest' ? guestData?.total_sessions : undefined,
+        }
+      };
+      const hasData = (segmentMode === 'event' && data.length > 0) || (segmentMode === 'behavioral' && behavioralData) || (segmentMode === 'guest' && guestData);
+      return hasData ? payload : null;
+    };
+    onExplainPayloadReady(getter);
+    return () => { onExplainPayloadReady(null); };
+  }, [onExplainPayloadReady, segmentMode, measurement, timePeriod, groupBy, interval, events, data, behavioralData, guestData]);
+
   const toggleBehavioralSegment = (id: string) => {
     setSelectedBehavioralSegments(prev =>
       prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
@@ -303,6 +389,36 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({ eventSchema }) => {
 
       {/* Control Bar - shared controls */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1" />
+          {onExplain && (
+            <button
+              onClick={() => {
+                const payload = (segmentMode === 'event' && data.length > 0) || (segmentMode === 'behavioral' && behavioralData) || (segmentMode === 'guest' && guestData)
+                  ? {
+                      title: 'Segmentation Analysis',
+                      data: {
+                        segment_mode: segmentMode,
+                        measurement,
+                        time_period_days: timePeriod,
+                        group_by: groupBy,
+                        interval,
+                        events: segmentMode === 'event' ? events : undefined,
+                        event_results: segmentMode === 'event' ? data : undefined,
+                        behavioral_segments: segmentMode === 'behavioral' ? behavioralData : undefined,
+                        guest_segments: segmentMode === 'guest' ? guestData : undefined,
+                      }
+                    }
+                  : null;
+                if (payload) onExplain(payload.title, payload.data);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-lg text-sm font-medium hover:bg-indigo-100 hover:border-indigo-200 transition-all"
+            >
+              <Sparkles size={16} />
+              AI Insights
+            </button>
+          )}
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {segmentMode === 'event' && (
             <>

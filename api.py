@@ -4,9 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import run_query
 import os
+import re
 import json
 import urllib.request
 import uuid
+import time
 from datetime import datetime
 
 app = FastAPI(title="ResortIQ ClickHouse API")
@@ -14,7 +16,7 @@ app = FastAPI(title="ResortIQ ClickHouse API")
 # Allow your React/Vite dev server to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -578,6 +580,9 @@ class FunnelRequest(BaseModel):
     segments: Optional[List[SegmentComparison]] = None  # User-defined segments for comparison
     date_range: Optional[Dict[str, str]] = None
     global_filters: Optional[Dict[str, Any]] = None
+    # Hybrid Funnel: demo = curated steps, dynamic = user-built from DB events
+    funnel_mode: str = "demo"  # "demo" | "dynamic"
+    funnel_id: Optional[str] = None  # For demo mode: which preset (default: hospitality_booking)
 
 
 # Mapping layer: Human-readable event names to database logic
@@ -771,18 +776,40 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
     """
     Calculate funnel data using windowFunnel based on event sequences.
     
-    This is the "Brain Layer" that translates UI event definitions into
-    ClickHouse windowFunnel queries.
+    Hybrid Funnel Engine:
+    - Demo mode: Uses curated steps (from config if steps empty)
+    - Dynamic mode: Uses steps built from /api/funnel/events/dynamic
+    
+    Sequential validation enforced by windowFunnel (strict order).
     """
     try:
-        step_count = len(request.steps)
+        # Resolve steps from mode (Phase 3 - Definition Layer)
+        steps_raw = [s.dict() if hasattr(s, 'dict') else s for s in request.steps]
+        try:
+            from engines.funnel_engine import resolve_funnel_steps
+            resolved = resolve_funnel_steps(
+                request.funnel_mode or "demo",
+                steps_raw if steps_raw else None,
+                request.funnel_id
+            )
+        except ImportError:
+            resolved = steps_raw
+
+        # Convert to FunnelStepRequest for downstream
+        steps_to_use = [FunnelStepRequest(**{**s, "filters": s.get("filters") or []}) for s in resolved] if resolved else []
+
+        step_count = len(steps_to_use)
         if step_count == 0:
             return {
                 "data": [],
                 "view_type": request.view_type,
                 "completed_within": request.completed_within,
-                "counting_by": request.counting_by
+                "counting_by": request.counting_by,
+                "funnel_mode": request.funnel_mode,
             }
+        
+        # Use resolved steps for rest of logic (replace request.steps)
+        _steps = steps_to_use
         
         # Convert completed_within days to seconds for windowFunnel
         # This is the conversion window (how long a user has to complete the funnel)
@@ -793,8 +820,8 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
         # Use at least 90 days to capture all sessions, or completed_within * 3, whichever is larger
         data_window_days = max(90, request.completed_within * 3)
         
-        # Build windowFunnel conditions
-        conditions = build_windowfunnel_conditions(request.steps)
+        # Build windowFunnel conditions (use resolved steps)
+        conditions = build_windowfunnel_conditions(_steps)
         
         # Determine counting method
         counting_method = request.counting_by or "unique_users"
@@ -988,9 +1015,9 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                 all_segment_counts[step_idx] = {}
                             all_segment_counts[step_idx][segment.name] = all_segment_counts[step_idx].get(segment.name, 0) + count_val
             
-            # Build response with segment data
+            # Build response with segment data (use _steps for labels)
             result = []
-            for idx, step in enumerate(request.steps):
+            for idx, step in enumerate(_steps):
                 step_num = idx + 1
                 segment_data = all_segment_counts.get(step_num, {})
                 
@@ -1032,7 +1059,8 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                 "view_type": request.view_type,
                 "completed_within": request.completed_within,
                 "counting_by": request.counting_by,
-                "has_segments": True
+                "has_segments": True,
+                "funnel_mode": request.funnel_mode,
             }
         
         # Build the windowFunnel query
@@ -1155,9 +1183,18 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                         step_counts[step_idx] = {}
                     step_counts[step_idx][segment] = step_counts[step_idx].get(segment, 0) + count_val
         
+        # Phase 9: Validation - detect aggregation drift
+        validation_anomalies = []
+        try:
+            from engines.funnel_engine import validate_funnel_results
+            flat_counts = {i: sum(step_counts.get(i, {}).values()) for i in range(1, step_count + 1)}
+            _valid, validation_anomalies = validate_funnel_results(flat_counts, None, step_count)
+        except ImportError:
+            pass
+
         # Calculate conversion rates and build response
         result = []
-        for idx, step in enumerate(request.steps):
+        for idx, step in enumerate(_steps):
             step_num = idx + 1
             segs = step_counts.get(step_num, {})
             
@@ -1190,7 +1227,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                 
                 # If not the last step, calculate time to next step
                 if idx < step_count - 1:
-                    next_step = request.steps[idx + 1]
+                    next_step = _steps[idx + 1]
                     next_step_condition = map_ui_to_sql(next_step)
                     
                     time_query = f"""
@@ -1265,7 +1302,9 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
             "data": result,
             "view_type": request.view_type,
             "completed_within": request.completed_within,
-            "counting_by": request.counting_by
+            "counting_by": request.counting_by,
+            "funnel_mode": request.funnel_mode,
+            "validation_anomalies": validation_anomalies,
         }
         
     except Exception as exc:
@@ -1285,6 +1324,88 @@ def normalize_location(ui_location: Optional[str]) -> Optional[str]:
     if not ui_location or ui_location == "All Locations":
         return None
     return LOCATION_MAP.get(ui_location, ui_location.lower().replace(" ", "_"))
+
+
+# ============================================================================
+# Dynamic Event Discovery - Phase 4
+# ============================================================================
+
+_DYNAMIC_EVENTS_CACHE: Dict[str, Any] = {"events": [], "ts": 0}
+_DYNAMIC_EVENTS_TTL_SEC = 300  # 5 minutes
+
+
+@app.get("/api/funnel/events/dynamic")
+async def get_dynamic_events(
+    min_count: int = Query(default=100, description="Min events to include"),
+    limit: int = Query(default=50, description="Max event types to return"),
+) -> Dict[str, Any]:
+    """
+    Dynamic event discovery - fetch available event_type values from raw_events.
+    
+    Used for Dynamic funnel mode: users build funnels from any event in the schema.
+    Cached for 5 minutes to avoid repeated DB hits.
+    Fallback: returns demo event types if query fails.
+    """
+    now = time.time()
+    if _DYNAMIC_EVENTS_CACHE["events"] and (now - _DYNAMIC_EVENTS_CACHE["ts"]) < _DYNAMIC_EVENTS_TTL_SEC:
+        return {"events": _DYNAMIC_EVENTS_CACHE["events"], "cached": True, "mode": "dynamic"}
+
+    try:
+        query = f"""
+            SELECT event_type, count(*) as cnt
+            FROM raw_events
+            WHERE timestamp >= now() - INTERVAL 90 DAY
+              AND event_type != '' AND event_type IS NOT NULL
+            GROUP BY event_type
+            HAVING cnt >= {min_count}
+            ORDER BY cnt DESC
+            LIMIT {limit}
+        """
+        rows = run_query(query)
+        events = [{"event_type": str(r[0]), "count": int(r[1]), "label": _format_event_label(str(r[0]))} for r in rows]
+
+        _DYNAMIC_EVENTS_CACHE["events"] = events
+        _DYNAMIC_EVENTS_CACHE["ts"] = now
+        return {"events": events, "cached": False, "mode": "dynamic"}
+    except Exception as exc:
+        print(f"[Dynamic Events] Fallback due to error: {exc}")
+        # Fallback to demo-mapped event types
+        fallback = [
+            {"event_type": "page_view", "label": "Page View"},
+            {"event_type": "click", "label": "Click"},
+            {"event_type": "date_select", "label": "Date Select"},
+            {"event_type": "form_interaction", "label": "Form Interaction"},
+            {"event_type": "room_view", "label": "Room View"},
+            {"event_type": "price_view", "label": "Price View"},
+        ]
+        return {"events": fallback, "cached": False, "mode": "dynamic", "fallback": True}
+
+
+def _format_event_label(event_type: str) -> str:
+    """Convert event_type to human label (e.g. page_view -> Page View)."""
+    return event_type.replace("_", " ").title()
+
+
+@app.get("/api/funnel/demo-config")
+async def get_demo_funnel_config() -> Dict[str, Any]:
+    """
+    Return curated demo funnel definitions for Demo mode.
+    Stable for investor/client demos.
+    """
+    try:
+        from config.funnel_config import DEMO_FUNNELS, get_default_demo_steps
+        return {
+            "funnels": DEMO_FUNNELS,
+            "default_steps": get_default_demo_steps(),
+            "mode": "demo",
+        }
+    except ImportError:
+        return {
+            "funnels": {},
+            "default_steps": [],
+            "mode": "demo",
+            "error": "Config module not found",
+        }
 
 
 @app.get("/api/funnel/locations")
@@ -3344,99 +3465,165 @@ def call_azure_gpt(messages: List[Dict[str, str]]) -> str:
         raise HTTPException(status_code=500, detail=f"Azure OpenAI request failed: {str(exc)}")
 
 
+def _is_segmentation_data(data: Any) -> bool:
+    """Detect if payload is segmentation (vs funnel) analysis."""
+    if not isinstance(data, dict):
+        return False
+    return (
+        "segment_mode" in data
+        or "behavioral_segments" in data
+        or "guest_segments" in data
+        or "event_results" in data
+    )
+
+
 @app.post("/api/ai/insight")
 async def generate_ai_insight(request: AiInsightRequest) -> Dict[str, Any]:
     """
     AskAI Analyst endpoint.
     
-    Takes JSON data from the frontend (funnel, path analysis, cohorts, etc.)
+    Takes JSON data from the frontend (funnel, segmentation, path analysis, cohorts, etc.)
     and returns a narrative forensic summary using Azure GPT.
+    Supports both funnel and segmentation analysis with marketing intelligence focus.
     """
     try:
-        # System prompt: Kalahari Resorts-specific intelligence analyst
-        system_prompt = (
-            "You are the 'AskAI Intelligence Analyst' for Kalahari Resorts' booking analytics platform.\n"
-            "You act as a Senior Revenue Manager and Forensic UX Investigator specifically for Kalahari Resorts properties.\n"
-            "You receive structured JSON analytics data including funnel conversions, friction points, time-series trends, and behavioral patterns.\n\n"
-            "## CRITICAL: Data Structure Understanding\n"
-            "The analytics_data you receive contains:\n"
-            "- **funnel_conversion**: Array of step-by-step conversion metrics (visitors, conversion_rate, drop_off_count, drop_off_rate)\n"
-            "- **summary**: Overall funnel performance (total_visitors, final_conversions, overall_conversion_rate, total_dropped)\n"
-            "- **friction_data**, **latency_data**, **path_analysis**: Supporting forensic data\n"
-            "- **config**: Funnel configuration (steps, filters, time windows, measurement type)\n\n"
-            "## Your Analysis Process:\n"
-            "1) **Analyze ACTUAL NUMBERS**: Look at the `funnel_conversion` array - focus on `visitors`, `conversion_rate`, and `drop_off_count` for each step\n"
-            "2) **Identify the Crucial Leak**: Which step has the HIGHEST drop_off_count or LOWEST conversion_rate?\n"
-            "3) **Quantify Revenue Impact**: Use drop_off_count × $260 (avg booking value) to calculate revenue at risk\n"
-            "4) **Diagnose Root Causes**: Reference friction_data, latency_data, and path_analysis to explain WHY users drop off\n"
-            "5) **Generate Hypotheses**: Provide 2-3 testable hypotheses based on the specific step and data patterns\n"
-            "6) **Recommend Actions**: Concrete, step-specific fixes (not generic advice)\n\n"
-            "## Output Guidelines:\n"
-            "- **ALWAYS reference actual numbers** from funnel_conversion (e.g., '1,234 users dropped at Room Select = 64% drop-off')\n"
-            "- Use markdown: **bold** for metrics, bullet lists, ## headings\n"
-            "- Be specific to the funnel steps shown (e.g., 'Landed', 'Location Select', 'Date Select', 'Room Select', 'Payment', 'Confirmation')\n"
-            "- Calculate revenue impact: drop_off_count × $260 = revenue at risk\n"
-            "- If data arrays are empty or have zero visitors, say so explicitly and suggest data collection fixes\n"
-            "- Keep tone executive-ready: clear, confident, actionable\n\n"
-            "## Context:\n"
-            "Kalahari Resorts is a family-friendly waterpark resort chain. Typical booking value: $260. Guests: families with kids booking 2-3 night stays. Key drivers: waterpark access, room type clarity, mobile UX, pricing transparency.\n"
-        )
-
-        # User prompt includes context name, optional natural-language question, and JSON data
         base_question = (
             request.user_query.strip()
             if request.user_query
-            else "Analyze this chart and identify the biggest revenue leak, friction point, or opportunity. Explain why it's happening and what actions Kalahari should take."
+            else None
         )
-
-        user_content = {
-            "context": request.context_name,
-            "question": base_question,
-            "analytics_data": request.data,
-        }
-
-        # Extract key metrics for emphasis in prompt
         data_summary = ""
-        if isinstance(request.data, dict):
-            if "funnel_conversion" in request.data and request.data["funnel_conversion"]:
-                funnel_steps = request.data["funnel_conversion"]
+        d = request.data if isinstance(request.data, dict) else {}
+
+        if _is_segmentation_data(d):
+            # --- SEGMENTATION MODE ---
+            system_prompt = (
+                "You are the 'AskAI Marketing Intelligence Analyst' for Kalahari Resorts' analytics platform.\n"
+                "You act as a Senior Growth Marketer and Revenue Strategist for hospitality brands.\n"
+                "You receive segmentation data: event-based metrics, behavioral segments (Researchers, Bargain Hunters, High-Friction Droppers, etc.), "
+                "and guest/user segments (Families, Mobile Guests, High-Value, etc.).\n\n"
+                "## Data You May Receive:\n"
+                "- **segment_mode**: 'event' | 'behavioral' | 'guest'\n"
+                "- **event_results**: Event-based metrics (uniques, totals, time series, breakdown by device/guest/traffic)\n"
+                "- **behavioral_segments**: segments (Researchers, Bargain Hunters, Converters, etc.) with sessions, conversion_rate_pct, revenue, pct_of_total\n"
+                "- **guest_segments**: segments (Families, Mobile, Desktop, etc.) with same structure\n"
+                "- **measurement**, **time_period_days**, **group_by**, **interval**\n\n"
+                "## STRICT ACCURACY RULES (VERY IMPORTANT):\n"
+                "- You MUST base ALL numbers and calculations ONLY on the JSON analytics data provided.\n"
+                "- NEVER invent or guess values that are not present in the data. If a number is missing, say 'data not available'.\n"
+                "- If the user asks for a metric that is not present in the JSON, clearly state that the data is not available instead of approximating.\n"
+                "- When you compute anything (e.g., revenue uplift), explicitly reference the underlying JSON fields (sessions, conversion_rate_pct, revenue).\n\n"
+                "## Your Analysis Process:\n"
+                "1) **Identify the highest-leverage segment**: Which segment has the best conversion rate or revenue potential?\n"
+                "2) **Spot underperformers**: Which segment has low conversion but high traffic? That's an opportunity.\n"
+                "3) **Quantify revenue impact**: Use sessions × conversion_rate × $260 for revenue at risk or uplift potential, but ONLY if both sessions and conversion_rate_pct are present in the JSON.\n"
+                "4) **Recommend marketing actions**: Segment-specific campaigns (e.g., 'Researchers need room clarity')\n"
+                "5) **Cross-segment insights**: Compare behavioral vs guest segments for targeting strategies\n\n"
+                "## Output Guidelines:\n"
+                "- ALWAYS reference actual numbers (sessions, conversion_rate_pct, revenue) taken directly from the JSON.\n"
+                "- Use markdown: **bold**, bullet lists, ## headings\n"
+                "- Be specific to the segments shown\n"
+                "- Keep tone executive-ready: clear, confident, actionable\n"
+                "- Typical booking value: $260 for Kalahari Resorts (use this ONLY when computing revenue from explicit counts in the data).\n"
+            )
+            default_question = "Analyze this segmentation data. Which segment offers the best opportunity? What marketing actions should we take?"
+            user_question = base_question or default_question
+            if d.get("behavioral_segments"):
+                segs = d["behavioral_segments"].get("segments", [])
+                total = d["behavioral_segments"].get("total_sessions", 0)
+                data_summary = f"\n**Quick Summary (Behavioral):** {len(segs)} segments, {total:,} total sessions\n"
+                for s in segs[:5]:
+                    data_summary += f"- {s.get('label', '')}: {s.get('sessions', 0):,} sessions, {s.get('conversion_rate_pct', 0):.1f}% conversion\n"
+            elif d.get("guest_segments"):
+                segs = d["guest_segments"].get("segments", [])
+                total = d["guest_segments"].get("total_sessions", 0)
+                data_summary = f"\n**Quick Summary (Guest):** {len(segs)} segments, {total:,} total sessions\n"
+                for s in segs[:5]:
+                    data_summary += f"- {s.get('label', '')}: {s.get('sessions', 0):,} sessions, {s.get('conversion_rate_pct', 0):.1f}% conversion\n"
+            elif d.get("event_results"):
+                results = d["event_results"]
+                data_summary = f"\n**Quick Summary (Event-based):** {len(results)} events measured as {d.get('measurement', 'uniques')}\n"
+            user_content = (
+                f"# Segmentation / Marketing Intelligence Request\n\n"
+                f"**Context:** {request.context_name}\n"
+                f"**Question:** {user_question}\n"
+                f"{data_summary}\n"
+                "**Full Analytics Data:**\n"
+                f"```json\n{json.dumps(request.data, indent=2, default=str)}\n```\n\n"
+                "**Instructions:** Provide a Key Takeaway, Revenue/Conversion insight, Why This Matters, and Recommended Marketing Actions."
+            )
+        else:
+            # --- FUNNEL MODE ---
+            system_prompt = (
+                "You are the 'AskAI Intelligence Analyst' for Kalahari Resorts' booking analytics platform.\n"
+                "You act as a Senior Revenue Manager and Forensic UX Investigator specifically for Kalahari Resorts properties.\n"
+                "You receive structured JSON analytics data including funnel conversions, friction points, time-series trends, and behavioral patterns.\n\n"
+                "## CRITICAL: Data Structure Understanding\n"
+                "The analytics_data you receive contains:\n"
+                "- **funnel_conversion**: Array of step-by-step conversion metrics (visitors, conversion_rate, drop_off_count, drop_off_rate)\n"
+                "- **summary**: Overall funnel performance (total_visitors, final_conversions, overall_conversion_rate, total_dropped)\n"
+                "- **friction_data**, **latency_data**, **path_analysis**: Supporting forensic data\n"
+                "- **config**: Funnel configuration (steps, filters, time windows, measurement type)\n\n"
+                "## STRICT ACCURACY RULES (VERY IMPORTANT):\n"
+                "- You MUST base ALL numbers and calculations ONLY on the JSON analytics data provided.\n"
+                "- NEVER invent or guess any metric that is not present in the JSON. If a value is missing, state clearly that it is not available.\n"
+                "- When you compute revenue impact (drop_off_count × $260), use the exact drop_off_count from the JSON and show the math.\n"
+                "- If the user question asks for something not contained in the JSON (for example, a time period or metric not present), explicitly say that the data is not available instead of approximating.\n\n"
+                "## Your Analysis Process:\n"
+                "1) **Analyze ACTUAL NUMBERS**: Look at the `funnel_conversion` array - focus on `visitors`, `conversion_rate`, and `drop_off_count` for each step.\n"
+                "2) **Identify the Crucial Leak**: Which step has the HIGHEST drop_off_count or LOWEST conversion_rate?\n"
+                "3) **Quantify Revenue Impact**: Use drop_off_count × $260 (avg booking value) to calculate revenue at risk, and always show the calculation.\n"
+                "4) **Diagnose Root Causes**: Reference friction_data, latency_data, and path_analysis to explain WHY users drop off (but do not invent data).\n"
+                "5) **Generate Hypotheses**: Provide 2-3 testable hypotheses based on the specific step and data patterns.\n"
+                "6) **Recommend Actions**: Concrete, step-specific fixes (not generic advice).\n\n"
+                "## Output Guidelines:\n"
+                "- **ALWAYS reference actual numbers** from funnel_conversion (e.g., '1,234 users dropped at Room Select = 64% drop-off').\n"
+                "- Use markdown: **bold** for metrics, bullet lists, ## headings.\n"
+                "- Be specific to the funnel steps shown (e.g., 'Landed', 'Location Select', 'Date Select', 'Room Select', 'Payment', 'Confirmation').\n"
+                "- Calculate revenue impact: drop_off_count × $260 = revenue at risk, clearly showing both operands and the result.\n"
+                "- If data arrays are empty or have zero visitors, say so explicitly and suggest data collection fixes.\n"
+                "- Keep tone executive-ready: clear, confident, actionable.\n\n"
+                "## Context:\n"
+                "Kalahari Resorts is a family-friendly waterpark resort chain. Typical booking value: $260. Guests: families with kids booking 2-3 night stays. Key drivers: waterpark access, room type clarity, mobile UX, pricing transparency.\n"
+            )
+            default_question = "Analyze this chart and identify the biggest revenue leak, friction point, or opportunity. Explain why it's happening and what actions Kalahari should take."
+            base_question = base_question or default_question
+            if "funnel_conversion" in d and d["funnel_conversion"]:
+                funnel_steps = d["funnel_conversion"]
                 data_summary = f"\n\n**Quick Summary:**\n"
                 data_summary += f"- Total Funnel Steps: {len(funnel_steps)}\n"
                 data_summary += f"- First Step Visitors: {funnel_steps[0].get('visitors', 0):,}\n"
                 data_summary += f"- Final Step Visitors: {funnel_steps[-1].get('visitors', 0):,}\n"
-                data_summary += f"- Overall Conversion Rate: {request.data.get('summary', {}).get('overall_conversion_rate', 0)}%\n"
-                # Find biggest drop-off
+                data_summary += f"- Overall Conversion Rate: {d.get('summary', {}).get('overall_conversion_rate', 0)}%\n"
                 max_dropoff_step = max(funnel_steps[1:], key=lambda x: x.get('drop_off_count', 0), default=None)
                 if max_dropoff_step:
                     data_summary += f"- Biggest Drop-off: {max_dropoff_step.get('step_name', 'Unknown')} ({max_dropoff_step.get('drop_off_count', 0):,} users, {max_dropoff_step.get('drop_off_rate', 0):.1f}%)\n"
-        
+            user_content = (
+                "# Kalahari Resorts Funnel Analysis Request\n\n"
+                f"**Context:** {request.context_name}\n"
+                f"**Question:** {base_question}\n"
+                f"{data_summary}\n"
+                "**Full Analytics Data:**\n"
+                f"```json\n{json.dumps(request.data, indent=2, default=str)}\n```\n\n"
+                "**Instructions:**\n"
+                "1. Focus on the `funnel_conversion` array - analyze ACTUAL NUMBERS (visitors, drop_off_count, conversion_rate)\n"
+                "2. Identify which step has the highest drop-off (look at drop_off_count and drop_off_rate)\n"
+                "3. Calculate revenue impact: drop_off_count × $260\n"
+                "4. Provide specific, actionable recommendations for that exact funnel step\n\n"
+                "**Response Structure:**\n"
+                "## Key Takeaway\n"
+                "[1-2 sentences highlighting the biggest issue with specific numbers]\n\n"
+                "## Revenue Impact\n"
+                "[Quantified loss calculation: X users × $260 = $Y,ZZZ at risk]\n\n"
+                "## Why This Is Happening\n"
+                "[2-3 specific hypotheses based on the step and data]\n\n"
+                "## Recommended Actions\n"
+                "[Bullet list of concrete fixes for this specific step]\n"
+            )
+
         messages = [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": (
-                    "# Kalahari Resorts Funnel Analysis Request\n\n"
-                    f"**Context:** {request.context_name}\n"
-                    f"**Question:** {base_question}\n"
-                    f"{data_summary}\n"
-                    "**Full Analytics Data:**\n"
-                    f"```json\n{json.dumps(request.data, indent=2, default=str)}\n```\n\n"
-                    "**Instructions:**\n"
-                    "1. Focus on the `funnel_conversion` array - analyze ACTUAL NUMBERS (visitors, drop_off_count, conversion_rate)\n"
-                    "2. Identify which step has the highest drop-off (look at drop_off_count and drop_off_rate)\n"
-                    "3. Calculate revenue impact: drop_off_count × $260\n"
-                    "4. Provide specific, actionable recommendations for that exact funnel step\n\n"
-                    "**Response Structure:**\n"
-                    "## Key Takeaway\n"
-                    "[1-2 sentences highlighting the biggest issue with specific numbers]\n\n"
-                    "## Revenue Impact\n"
-                    "[Quantified loss calculation: X users × $260 = $Y,ZZZ at risk]\n\n"
-                    "## Why This Is Happening\n"
-                    "[2-3 specific hypotheses based on the step and data]\n\n"
-                    "## Recommended Actions\n"
-                    "[Bullet list of concrete fixes for this specific step]\n"
-                ),
-            },
+            {"role": "user", "content": user_content},
         ]
 
         insight_text = call_azure_gpt(messages)
@@ -3447,6 +3634,201 @@ async def generate_ai_insight(request: AiInsightRequest) -> Dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"AI insight error: {str(exc)}")
+
+
+class GuidedBuildMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class GuidedBuildRequest(BaseModel):
+    """Guided chart builder - AI asks questions, user answers, AI returns config to apply."""
+    messages: List[GuidedBuildMessage]
+    current_state: Optional[Dict[str, Any]] = None  # analysis_type, measurement, has_steps, etc.
+    # Optional: current view config from frontend (AnalyticsStudio / SegmentationView)
+    # Example: {"analysis_type": "funnel", "measurement": "conversion", "layout_template": "..."}
+    current_view: Optional[Dict[str, Any]] = None
+
+
+# Standard funnel steps for guided build (hospitality booking)
+GUIDED_BUILD_FUNNEL_STEPS = [
+    {"id": "1", "label": "Landed", "event_type": "Landed", "event_category": "hospitality"},
+    {"id": "2", "label": "Location Select", "event_type": "Location Select", "event_category": "hospitality"},
+    {"id": "3", "label": "Date Select", "event_type": "Date Select", "event_category": "hospitality"},
+    {"id": "4", "label": "Room Select", "event_type": "Room Select", "event_category": "hospitality"},
+    {"id": "5", "label": "Payment", "event_type": "Payment", "event_category": "hospitality"},
+    {"id": "6", "label": "Confirmation", "event_type": "Confirmation", "event_category": "hospitality"},
+]
+
+
+@app.post("/api/ai/guided-build")
+async def guided_build(request: GuidedBuildRequest) -> Dict[str, Any]:
+    """
+    AI-guided chart builder. User describes what they want (or answers AI questions).
+    Returns both a friendly message AND config_updates to apply (analysis_type, funnel_steps, etc).
+    """
+    try:
+        last_user = next((m for m in reversed(request.messages) if m.role == "user"), None)
+        user_text = (last_user.content or "").strip().lower() if last_user else ""
+        state = request.current_state or {}
+        has_steps = state.get("has_steps", False)
+
+        # Derive analysis_type first from current_view, then from state, then default to funnel.
+        view = request.current_view or {}
+        analysis_type = (
+            view.get("analysis_type")
+            or state.get("analysis_type")
+            or "funnel"
+        )
+
+        system_prompt = (
+            "You are a friendly analytics assistant for a hospitality booking platform.\n"
+            "Your job: help users BUILD or UPDATE charts by understanding what they want.\n\n"
+            "## You can control TWO analysis surfaces:\n"
+            "1. **Funnel** - conversion funnel (Landed → Location → Date → Room → Payment → Confirmation).\n"
+            "2. **Segmentation** - event-based, behavioral (Researchers, Bargain Hunters), or guest segments.\n\n"
+            "## IMPORTANT CONTEXT:\n"
+            "- The frontend tells you the CURRENT ANALYSIS TYPE the user is looking at via analysis_type in current_state/current_view.\n"
+            "- If analysis_type == 'funnel', you MUST return a funnel-style config (do NOT switch to segmentation), and you may also add segment comparisons via group_by / segments.\n"
+            "- If analysis_type == 'segmentation', you MUST return a segmentation config (do NOT build a funnel).\n\n"
+            "## FULL CONFIG SURFACE YOU CAN USE (VERY IMPORTANT):\n"
+            "- config_updates.analysis_type: 'funnel' | 'segmentation'.\n"
+            "- config_updates.measurement: generic measurement label (e.g., 'conversion', 'revenue_impact', 'uniques').\n\n"
+            "### For FUNNEL (config_updates when analysis_type == 'funnel'):\n"
+            "- funnel_steps: [{id, label, event_type, event_category}] — can be hospitality events OR generic events the user asks for.\n"
+            "- funnel_view_type: one of 'conversion' | 'overTime' | 'timeToConvert' | 'frequency' | 'improvement' | 'significance'.\n"
+            "- funnel_completed_within: integer days (1, 7, 30, etc.).\n"
+            "- funnel_counting_by: 'unique_users' | 'sessions' | 'events'.\n"
+            "- funnel_order: 'strict' | 'loose' | 'any'.\n"
+            "- funnel_group_by: 'device_type' | 'guest_segment' | 'traffic_source' | null (for segment comparisons like device, location, etc.).\n"
+            "- funnel_segments: array of SegmentComparison objects (id, name, filters[]) to compare specific segments.\n"
+            "- funnel_global_filters: { date_range?: {start, end}, location?: string }.\n\n"
+            "### For SEGMENTATION (config_updates when analysis_type == 'segmentation'):\n"
+            "- segment_mode: 'event' | 'behavioral' | 'guest'.\n"
+            "- segment_events: for event-based mode: [{id, event_type, event_category, filters?, label?}].\n"
+            "- segment_measurement: 'uniques' | 'event_totals' | 'average' | 'revenue_per_user' | custom labels.\n"
+            "- segment_group_by: 'device_type' | 'guest_segment' | 'traffic_source' | 'browser' | 'is_returning_visitor' | null.\n"
+            "- segment_time_period_days: 7 | 14 | 30 | 60 | 90 (or another positive integer).\n"
+            "- segment_interval: 'day' | 'week' | 'month'.\n\n"
+            "## Rules:\n"
+            "- Use the current analysis_type as the PRIMARY signal for whether to build a funnel or segmentation chart.\n"
+            "- When the user asks to change something (e.g., 'group by device', 'last 14 days', 'measure as revenue per user'), modify ONLY the relevant fields above.\n"
+            "- Only fall back to guessing (based on text) when analysis_type is missing.\n"
+            "- Keep responses SHORT and friendly (1-2 sentences).\n"
+            "- You MUST output a JSON block at the end: ```json\\n{\"config_updates\": {...}}\\n```.\n"
+            "- config_updates MUST use the field names listed above (funnel_* and segment_*). Do NOT invent new field names.\n"
+            "- If unclear, ask ONE short follow-up question. Do NOT include config_updates in that case.\n"
+            "- HOSPITALITY_STEPS = Landed, Location Select, Date Select, Room Select, Payment, Confirmation (event_category: hospitality).\n"
+        )
+
+        user_content = (
+            f"Current state: analysis_type={analysis_type}, has_steps={has_steps}\n\n"
+            f"User said: {user_text}\n\n"
+            f"Current view (if any): {json.dumps(view, default=str)}\n\n"
+            "Reply with a brief friendly message. If you can build a chart, end with a JSON block containing config_updates."
+        )
+
+        raw = call_azure_gpt([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ])
+
+        config_updates = None
+        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(1))
+                config_updates = parsed.get("config_updates")
+            except Exception:
+                pass
+
+        # Determine intent from user text (broad matching)
+        # NOTE: Segmentation intent takes precedence over funnel when both are present.
+        wants_funnel = any(
+            x in user_text
+            for x in [
+                "funnel",
+                "conversion",
+                "booking",
+                "build",
+                "standard",
+                "chart",
+                "flow",
+                "journey",
+                "landed",
+                "payment",
+                "confirmation",
+                "room select",
+            ]
+        )
+        wants_segment = any(
+            x in user_text
+            for x in [
+                "segment",
+                "segmentation",
+                "compare",
+                "behavioral",
+                "guest",
+                "cohort",
+                "device",
+                "mobile",
+                "desktop",
+                "tablet",
+            ]
+        )
+
+        # Fallback when no config from LLM
+        # IMPORTANT: Prefer segmentation when both funnel + segmentation intent appear.
+        if not config_updates:
+            if wants_segment:
+                seg_mode = (
+                    "behavioral"
+                    if "behavioral" in user_text
+                    else "guest"
+                    if "guest" in user_text
+                    else "event"
+                )
+                config_updates = {
+                    "analysis_type": "segmentation",
+                    "segment_mode": seg_mode,
+                }
+            elif wants_funnel:
+                config_updates = {
+                    "analysis_type": "funnel",
+                    "measurement": "conversion",
+                    "funnel_steps": GUIDED_BUILD_FUNNEL_STEPS,
+                }
+
+        # CRITICAL: Always ensure funnel_steps for funnel builds (LLM often omits them)
+        if config_updates and config_updates.get("analysis_type") == "funnel":
+            steps = config_updates.get("funnel_steps")
+            if not steps or not isinstance(steps, list) or len(steps) == 0:
+                config_updates["funnel_steps"] = GUIDED_BUILD_FUNNEL_STEPS
+
+        # Clean message - use professional success text when we have config to apply
+        message = raw
+        if json_match:
+            message = raw[: json_match.start()].strip()
+        if config_updates:
+            atype = config_updates.get("analysis_type", "")
+            steps = config_updates.get("funnel_steps", [])
+            seg_mode = config_updates.get("segment_mode", "")
+            if atype == "funnel" and steps:
+                message = f"✓ **Chart built successfully.** Your booking funnel is ready with {len(steps)} steps: {', '.join(s.get('label', s.get('event_type', '')) for s in steps[:6])}. Check the left panel to see your funnel."
+            elif atype == "segmentation":
+                mode_label = {"behavioral": "behavioral segments", "guest": "guest segments", "event": "event-based"}.get(seg_mode, seg_mode or "segmentation")
+                message = f"✓ **Chart built successfully.** Switched to segmentation view with {mode_label}. Your chart is ready."
+            else:
+                message = message or "✓ Chart configured. Check the left panel."
+        else:
+            message = message or "I couldn't build a chart from that. Try: \"Build a booking funnel\" or \"Show behavioral segments\"."
+
+        return {"message": message, "config_updates": config_updates}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Guided build error: {str(exc)}")
 
 
 class AiSuggestRequest(BaseModel):
@@ -3462,20 +3844,36 @@ async def suggest_questions(request: AiSuggestRequest) -> Dict[str, Any]:
     Given the current chart context (Funnel, Segment, Friction, Revenue),
     return 3–4 follow-up questions that lead to business decisions.
     
-    This is the "Contextual Prompt Generator" that makes AskAI proactive.
+    Supports both funnel and segmentation analysis.
     """
     try:
-        system_prompt = (
-            "You are a strategic intelligence advisor for Kalahari Resorts.\n"
-            "Based on the ACTUAL FUNNEL DATA provided, generate 3-4 SHORT, data-specific questions (5-10 words each).\n\n"
-            "## Rules:\n"
-            "- Analyze the `funnel_conversion` array to see which steps have high drop-offs\n"
-            "- Generate questions SPECIFIC to the data (e.g., if 'Room Select' has 65% drop-off, ask 'Why 65% drop at Room Select?')\n"
-            "- Focus on: biggest leaks, revenue impact, root causes, improvement actions\n"
-            "- Keep questions SHORT and clickable\n"
-            "- Output ONLY a strict JSON array of strings (no other text)\n"
-            "- Example format: [\"What are key takeaways?\", \"Why the big drop at Payment?\", \"How to fix Room Select drop-off?\", \"Calculate total revenue at risk\"]\n"
-        )
+        d = request.data if isinstance(request.data, dict) else {}
+        is_seg = _is_segmentation_data(d)
+
+        if is_seg:
+            system_prompt = (
+                "You are a strategic marketing intelligence advisor for hospitality brands.\n"
+                "Based on the SEGMENTATION DATA provided (behavioral_segments, guest_segments, or event_results), "
+                "generate 3-4 SHORT, data-specific questions (5-10 words each).\n\n"
+                "## Rules:\n"
+                "- Analyze segments: conversion rates, revenue, pct_of_total, sessions\n"
+                "- Generate questions SPECIFIC to the data (e.g., 'Why do Researchers have low conversion?')\n"
+                "- Focus on: best opportunity segment, underperformers, marketing actions, revenue potential\n"
+                "- Output ONLY a strict JSON array of strings (no other text)\n"
+                "- Example: [\"Which segment has best conversion?\", \"Why do Bargain Hunters drop off?\", \"How to target High-Friction Droppers?\"]\n"
+            )
+        else:
+            system_prompt = (
+                "You are a strategic intelligence advisor for Kalahari Resorts.\n"
+                "Based on the ACTUAL FUNNEL DATA provided, generate 3-4 SHORT, data-specific questions (5-10 words each).\n\n"
+                "## Rules:\n"
+                "- Analyze the `funnel_conversion` array to see which steps have high drop-offs\n"
+                "- Generate questions SPECIFIC to the data (e.g., if 'Room Select' has 65% drop-off, ask 'Why 65% drop at Room Select?')\n"
+                "- Focus on: biggest leaks, revenue impact, root causes, improvement actions\n"
+                "- Keep questions SHORT and clickable\n"
+                "- Output ONLY a strict JSON array of strings (no other text)\n"
+                "- Example format: [\"What are key takeaways?\", \"Why the big drop at Payment?\", \"How to fix Room Select drop-off?\", \"Calculate total revenue at risk\"]\n"
+            )
 
         user_payload = {
             "context_name": request.context_name,

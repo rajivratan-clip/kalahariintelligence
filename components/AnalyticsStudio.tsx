@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus } from 'lucide-react';
 import FunnelLab from './FunnelLab';
 import RevenueImpactView from './RevenueImpactView';
 import HospitalityMetricsView from './HospitalityMetricsView';
 import SegmentationView from './SegmentationView';
-import { FunnelDefinition } from '../types';
+import { FunnelDefinition, FunnelStepConfig, AnalyticsConfigUpdate, ViewConfig } from '../types';
+import { useAiOrchestrator } from '../engines/useAiOrchestrator';
 
 // Analysis types that can be selected
 type AnalysisType = 'funnel' | 'segmentation' | 'retention' | 'paths';
@@ -156,7 +157,23 @@ const SEGMENTATION_MEASUREMENTS: MeasurementOption[] = [
   }
 ];
 
-const AnalyticsStudio: React.FC = () => {
+interface AnalyticsStudioProps {
+  onExplain?: (title: string, data: unknown) => void;
+  onOpenAskAI?: () => void;
+  applyConfigRef?: React.MutableRefObject<((u: AnalyticsConfigUpdate) => void) | null>;
+}
+
+const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskAI, applyConfigRef }) => {
+  const {
+    sessions,
+    activeSessionId,
+    switchSession,
+    createNewSession,
+    deleteSession,
+    getActiveSession,
+    ensureDefaultSession,
+  } = useAiOrchestrator();
+
   const [analysisType, setAnalysisType] = useState<AnalysisType>('funnel');
   const [measurement, setMeasurement] = useState<MeasurementType>('conversion');
   const [eventSchema, setEventSchema] = useState<any>(null);
@@ -177,6 +194,138 @@ const AnalyticsStudio: React.FC = () => {
     order: 'strict',
     segments: []
   });
+
+  // Child views register a getter; header "Ask AI" calls it for current context
+  const explainPayloadGetterRef = useRef<(() => { title: string; data: unknown } | null) | null>(null);
+
+  // Ensure default session exists on mount
+  useEffect(() => {
+    ensureDefaultSession();
+  }, [ensureDefaultSession]);
+
+  // Sync active session's view config to local state
+  useEffect(() => {
+    const session = getActiveSession();
+    if (session?.currentViewConfig) {
+      const view = session.currentViewConfig;
+      if (view.analysis_type) setAnalysisType(view.analysis_type);
+      if (view.measurement) setMeasurement(view.measurement as MeasurementType);
+      if (view.funnel_definition) {
+        setFunnelConfig(view.funnel_definition);
+        if (view.funnel_definition.steps.length > 0) {
+          setInjectedFunnelSteps(view.funnel_definition.steps);
+        }
+      }
+      if (view.segmentation_state?.mode) {
+        setInjectedSegmentMode(view.segmentation_state.mode);
+      }
+    }
+  }, [activeSessionId, getActiveSession]);
+
+  // Register applyConfig so AI guided build can update our state
+  useEffect(() => {
+    if (!applyConfigRef) return;
+    applyConfigRef.current = (updates: AnalyticsConfigUpdate) => {
+      const session = getActiveSession();
+      if (!session) return;
+
+      // High-level analysis type + measurement
+      if (updates.analysis_type) {
+        setAnalysisType(updates.analysis_type as AnalysisType);
+      }
+      if (updates.measurement) {
+        setMeasurement(updates.measurement as MeasurementType);
+      }
+
+      // --------- Funnel configuration updates ---------
+      if (updates.analysis_type === 'funnel') {
+        setAnalysisType('funnel');
+
+        // Start from current funnel config
+        let nextFunnelConfig: FunnelDefinition = { ...funnelConfig };
+
+        // Steps
+        if (updates.funnel_steps && updates.funnel_steps.length > 0) {
+          const steps: FunnelStepConfig[] = updates.funnel_steps.map((s, i) => ({
+            id: s.id || `step-${i + 1}`,
+            label: s.label,
+            event_type: s.event_type,
+            event_category: s.event_category,
+            filters: s.event_category ? [] : [], // Filters can be populated later from AI
+          }));
+          nextFunnelConfig = { ...nextFunnelConfig, steps };
+          setInjectedFunnelSteps(steps);
+        }
+
+        // Advanced knobs
+        if (updates.funnel_view_type) {
+          nextFunnelConfig = { ...nextFunnelConfig, view_type: updates.funnel_view_type };
+        }
+        if (typeof updates.funnel_completed_within === 'number') {
+          nextFunnelConfig = { ...nextFunnelConfig, completed_within: updates.funnel_completed_within };
+        }
+        if (updates.funnel_counting_by) {
+          nextFunnelConfig = { ...nextFunnelConfig, counting_by: updates.funnel_counting_by };
+        }
+        if (updates.funnel_order) {
+          nextFunnelConfig = { ...nextFunnelConfig, order: updates.funnel_order };
+        }
+        if (typeof updates.funnel_group_by !== 'undefined') {
+          nextFunnelConfig = { ...nextFunnelConfig, group_by: updates.funnel_group_by };
+        }
+        if (updates.funnel_segments) {
+          nextFunnelConfig = { ...nextFunnelConfig, segments: updates.funnel_segments };
+        }
+        if (updates.funnel_global_filters) {
+          nextFunnelConfig = { ...nextFunnelConfig, global_filters: updates.funnel_global_filters };
+        }
+
+        // Commit funnel config
+        setFunnelConfig(nextFunnelConfig);
+
+        // Update session's view config so Ask AI sees full state
+        const viewConfig: ViewConfig = {
+          id: `funnel-${Date.now()}`,
+          analysis_type: 'funnel',
+          measurement: (updates.measurement as string) || (measurement as string),
+          funnel_definition: nextFunnelConfig,
+          layout_template: 'SINGLE_CHART',
+        };
+        session.currentViewConfig = viewConfig;
+      }
+
+      // --------- Segmentation configuration updates ---------
+      if (updates.analysis_type === 'segmentation') {
+        setAnalysisType('segmentation');
+
+        // Mode (event / behavioral / guest)
+        if (updates.segment_mode) {
+          setInjectedSegmentMode(updates.segment_mode);
+        }
+
+        // Build segmentation_state snapshot for current view config
+        const segmentation_state: ViewConfig['segmentation_state'] = {
+          mode: updates.segment_mode,
+          events: updates.segment_events,
+          measurement: updates.segment_measurement,
+          group_by: updates.segment_group_by,
+        };
+
+        const viewConfig: ViewConfig = {
+          id: `segment-${Date.now()}`,
+          analysis_type: 'segmentation',
+          measurement: updates.segment_measurement || updates.measurement,
+          segmentation_state,
+          layout_template: 'SINGLE_CHART',
+        };
+        session.currentViewConfig = viewConfig;
+      }
+    };
+    return () => { applyConfigRef!.current = null; };
+  }, [applyConfigRef, funnelConfig, measurement, getActiveSession]);
+
+  const [injectedFunnelSteps, setInjectedFunnelSteps] = useState<FunnelStepConfig[] | null>(null);
+  const [injectedSegmentMode, setInjectedSegmentMode] = useState<'event' | 'behavioral' | 'guest' | null>(null);
 
   // Load event schema
   useEffect(() => {
@@ -213,11 +362,59 @@ const AnalyticsStudio: React.FC = () => {
     }
   }, [analysisType]);
 
+  const handleNewTab = () => {
+    createNewSession({ title: 'New Analysis' });
+  };
+
+  const handleTabSwitch = (sessionId: string) => {
+    switchSession(sessionId);
+  };
+
+  const handleTabClose = (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    deleteSession(sessionId);
+  };
+
   return (
     <div className="h-full w-full flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 overflow-hidden">
       {/* Header */}
       <div className="bg-white border-b border-slate-200 flex-shrink-0 z-10 shadow-sm">
         <div className="max-w-[1600px] mx-auto px-6 py-4">
+          {/* Tab Bar */}
+          {sessions.length > 0 && (
+            <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-2">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  onClick={() => handleTabSwitch(session.id)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+                    activeSessionId === session.id
+                      ? 'bg-purple-100 text-purple-700 border border-purple-300'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-transparent'
+                  }`}
+                >
+                  <span>{session.title}</span>
+                  {sessions.length > 1 && (
+                    <button
+                      onClick={(e) => handleTabClose(e, session.id)}
+                      className="ml-1 hover:bg-white/50 rounded p-0.5"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </button>
+              ))}
+              <button
+                onClick={handleNewTab}
+                className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg border border-transparent transition-all"
+                title="New Analysis Tab"
+              >
+                <Plus size={16} />
+                <span className="hidden sm:inline">New Tab</span>
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center justify-between mb-4">
             <div>
               <h1 className="text-2xl font-bold text-slate-900">Analytics Studio</h1>
@@ -227,7 +424,37 @@ const AnalyticsStudio: React.FC = () => {
               <button className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
                 💾 Save Analysis
               </button>
-              <button className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors">
+              <button
+                onClick={() => {
+                  onOpenAskAI?.();
+                  const payload = explainPayloadGetterRef.current?.();
+                  const session = getActiveSession();
+                  const currentView: ViewConfig = {
+                    id: `current-${Date.now()}`,
+                    analysis_type: analysisType,
+                    measurement: measurement as string,
+                    funnel_definition: analysisType === 'funnel' ? funnelConfig : undefined,
+                    layout_template: 'SINGLE_CHART',
+                  };
+                  
+                  if (onExplain) {
+                    if (payload) {
+                      onExplain(payload.title, payload.data);
+                    } else {
+                      onExplain('Analytics Studio', {
+                        analysis_type: analysisType,
+                        measurement,
+                        funnel_config: analysisType === 'funnel' ? funnelConfig : undefined,
+                        current_view: currentView,
+                        session_analyses: session?.analyses || [],
+                        message: 'Select a chart or add funnel steps, then ask for insights.'
+                      });
+                    }
+                  }
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+              >
+                <Sparkles size={16} />
                 🤖 Ask AI
               </button>
             </div>
@@ -259,7 +486,6 @@ const AnalyticsStudio: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Users size={16} />
                 👥 Segmentation
-                <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Coming Soon</span>
               </div>
             </button>
             <button
@@ -345,13 +571,23 @@ const AnalyticsStudio: React.FC = () => {
                 <FunnelLab 
                   initialMeasurement={measurement as FunnelMeasurement}
                   isEmbedded={true}
+                  onExplain={onExplain}
+                  onExplainPayloadReady={(getter) => { explainPayloadGetterRef.current = getter; }}
+                  injectedSteps={injectedFunnelSteps}
+                  onInjectedStepsConsumed={() => setInjectedFunnelSteps(null)}
                 />
               )}
             </>
           )}
 
         {analysisType === 'segmentation' && (
-          <SegmentationView eventSchema={eventSchema || {}} />
+          <SegmentationView 
+            eventSchema={eventSchema || {}} 
+            onExplain={onExplain}
+            onExplainPayloadReady={(getter) => { explainPayloadGetterRef.current = getter; }}
+            injectedSegmentMode={injectedSegmentMode}
+            onInjectedSegmentModeConsumed={() => setInjectedSegmentMode(null)}
+          />
         )}
 
         {(analysisType === 'retention' || analysisType === 'paths') && (

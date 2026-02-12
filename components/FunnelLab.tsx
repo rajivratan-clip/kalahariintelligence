@@ -50,8 +50,11 @@ import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema
 
 interface FunnelLabProps {
   onExplain?: (title: string, data: any) => void;
+  onExplainPayloadReady?: (getter: (() => { title: string; data: any } | null) | null) => void;
   initialMeasurement?: string;  // Initial view type (from Analytics Studio)
   isEmbedded?: boolean;          // If true, hide header (Analytics Studio provides it)
+  injectedSteps?: FunnelStepConfig[] | null;  // AI guided build: steps to apply
+  onInjectedStepsConsumed?: () => void;  // Call after applying
 }
 
 // Event Library - Generic Behavioral Events
@@ -72,15 +75,6 @@ const HOSPITALITY_MILESTONES = [
   { name: 'Guest Info', event_name: 'guest_info', description: 'Started entering personal details', icon: Users, category: 'hospitality' },
   { name: 'Payment', event_name: 'payment', description: 'Reached the CC entry screen', icon: DollarSign, category: 'hospitality' },
   { name: 'Confirmation', event_name: 'confirmation', description: 'Success/Thank you page', icon: Target, category: 'hospitality' },
-];
-
-const DEFAULT_STEPS: FunnelStepConfig[] = [
-  { id: '1', label: 'Landed', event_category: 'hospitality', event_type: 'Landed' },
-  { id: '2', label: 'Location Select', event_category: 'hospitality', event_type: 'Location Select' },
-  { id: '3', label: 'Date Select', event_category: 'hospitality', event_type: 'Date Select' },
-  { id: '4', label: 'Room Select', event_category: 'hospitality', event_type: 'Room Select' },
-  { id: '5', label: 'Payment', event_category: 'hospitality', event_type: 'Payment' },
-  { id: '6', label: 'Confirmation', event_category: 'hospitality', event_type: 'Confirmation' },
 ];
 
 // Curated Segment Properties - Only useful comparison dimensions with actual database values
@@ -158,9 +152,9 @@ const SEGMENT_PROPERTIES = [
   }
 ];
 
-const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, isEmbedded = false }) => {
+const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady, initialMeasurement, isEmbedded = false, injectedSteps, onInjectedStepsConsumed }) => {
   const [config, setConfig] = useState<FunnelDefinition>({
-    steps: DEFAULT_STEPS,
+    steps: [],
     view_type: 'conversion',
     completed_within: 1, // days
     counting_by: 'unique_users',
@@ -168,7 +162,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
     group_by: null,
     segments: [],  // User-defined segments for comparison
     global_filters: {},
-    compare_segment: null
+    compare_segment: null,
   });
 
   const [data, setData] = useState<FunnelStep[]>([]);
@@ -196,6 +190,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
   const [eventSchema, setEventSchema] = useState<any>(null);
   const [segmentValues, setSegmentValues] = useState<any>(null);
   const [isLoadingSegmentValues, setIsLoadingSegmentValues] = useState(false);
+  const [dynamicEvents, setDynamicEvents] = useState<Array<{event_type: string; label: string; count?: number}>>([]);
   const API_BASE = 'http://localhost:8000';
 
   // Set initial measurement from Analytics Studio
@@ -221,6 +216,16 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
       }
     }
   }, [initialMeasurement]);
+
+  // Fetch dynamic events when Add Step modal opens (for Generic tab)
+  useEffect(() => {
+    if (showAddStepModal && dynamicEvents.length === 0) {
+      fetch(`${API_BASE}/api/funnel/events/dynamic?limit=30`)
+        .then(r => r.ok ? r.json() : { events: [] })
+        .then(d => setDynamicEvents(d.events || []))
+        .catch(() => setDynamicEvents([]));
+    }
+  }, [showAddStepModal]);
 
   // Fetch event schema on mount
   useEffect(() => {
@@ -370,10 +375,65 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
     }
   }, [config]);
 
+  // Apply injected steps from AI guided build
+  useEffect(() => {
+    if (injectedSteps && injectedSteps.length > 0) {
+      setConfig((prev) => ({ ...prev, steps: injectedSteps }));
+      onInjectedStepsConsumed?.();
+    }
+  }, [injectedSteps]);
+
+  // Register explain payload for parent (Analytics Studio header "Ask AI")
+  useEffect(() => {
+    if (!onExplainPayloadReady) return;
+    const getter = () => {
+      if (config.steps.length === 0 || data.length === 0) return null;
+      return {
+        title: 'Funnel Explorer Analysis',
+        data: {
+          config: {
+            steps: config.steps.map(s => ({ label: s.label, event_type: s.event_type, filters: s.filters })),
+            completed_within: config.completed_within,
+            global_filters: config.global_filters,
+            group_by: config.group_by
+          },
+          funnel_conversion: data.map((step, idx) => {
+            const prevVisitors = idx > 0 ? data[idx - 1].visitors : step.visitors;
+            return {
+              step_name: step.name,
+              step_index: idx + 1,
+              visitors: step.visitors,
+              conversion_rate: prevVisitors > 0 ? ((step.visitors / prevVisitors) * 100) : 100,
+              drop_off_count: idx > 0 ? Math.max(0, prevVisitors - step.visitors) : 0,
+              drop_off_rate: idx > 0 ? Math.max(0, ((prevVisitors - step.visitors) / prevVisitors) * 100) : 0
+            };
+          }),
+          friction_data: frictionData,
+          over_time_data: overTimeData,
+          path_analysis: pathAnalysisData,
+          latency_data: latencyData,
+          abnormal_dropoffs: abnormalDropoffsData,
+          price_sensitivity: priceSensitivityData,
+          cohort_analysis: cohortAnalysisData,
+          executive_summary: executiveSummary,
+          summary: {
+            total_visitors: data[0]?.visitors || 0,
+            final_conversions: data[data.length - 1]?.visitors || 0,
+            overall_conversion_rate: data[0]?.visitors > 0 ? ((data[data.length - 1]?.visitors || 0) / data[0].visitors * 100).toFixed(1) : 0,
+            total_dropped: data[0]?.visitors - (data[data.length - 1]?.visitors || 0)
+          }
+        }
+      };
+    };
+    onExplainPayloadReady(getter);
+    return () => { onExplainPayloadReady(null); };
+  }, [onExplainPayloadReady, config, data, frictionData, overTimeData, pathAnalysisData, latencyData, abnormalDropoffsData, priceSensitivityData, cohortAnalysisData, executiveSummary]);
+
   const handleAddStep = (eventType: string, category: 'generic' | 'hospitality' | 'custom', customEventData?: any) => {
+    const label = category === 'custom' ? customEventData?.template_name : (customEventData?.label || eventType);
     const newStep: FunnelStepConfig = {
       id: Date.now().toString(),
-      label: eventType,
+      label,
       event_category: category,
       event_type: category === 'custom' ? (customEventData?.base_event_type || eventType) : eventType,
       filters: category === 'custom' ? (customEventData?.filters || []) : []
@@ -1117,6 +1177,28 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
               <div className="h-[700px] w-full">
                 {/* Check if we have segments for comparison */}
                 {(() => {
+                  // Empty funnel: prompt to add steps
+                  if (config.steps.length === 0) {
+                    return (
+                      <div className="flex items-center justify-center h-full">
+                        <div className="text-center text-slate-500 max-w-md">
+                          <Plus size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                          <p className="text-lg font-medium text-slate-700 mb-2">No funnel steps yet</p>
+                          <p className="text-sm text-slate-500 mb-4">
+                            Add steps from the left sidebar to build your conversion funnel.
+                            Choose hospitality events (Landed, Payment, etc.) or generic events from your database.
+                          </p>
+                          <button
+                            onClick={() => setShowAddStepModal(true)}
+                            className="px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors text-sm font-medium"
+                          >
+                            Add Step
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  
                   const hasSegments = config.segments && config.segments.length > 0;
                   
                   // Transform data for segment comparison
@@ -1894,7 +1976,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
         </div>
             
             <div className="flex-1 overflow-y-auto p-6">
-              {/* Category Tabs */}
+              {/* Category Tabs: Hospitality (hardcoded) + Generic (dynamic from DB) */}
               <div className="flex gap-2 mb-6 border-b border-slate-200">
                 <button
                   onClick={() => setSelectedEventCategory('hospitality')}
@@ -1988,33 +2070,44 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                       </div>
                     )}
                   </>
+                ) : selectedEventCategory === 'hospitality' ? (
+                  /* Hospitality: Hardcoded curated events for demos */
+                  HOSPITALITY_MILESTONES.map((event) => (
+                    <button
+                      key={event.event_name}
+                      onClick={() => handleAddStep(event.name, 'hospitality')}
+                      className="text-left p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-brand-100">
+                          <Target size={20} className="text-slate-600 group-hover:text-brand-600" />
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium text-slate-800">{event.name}</div>
+                          {event.description && (
+                            <div className="text-xs text-slate-500 mt-0.5">{event.description}</div>
+                          )}
+                        </div>
+                        <ArrowRight size={16} className="text-slate-300 group-hover:text-brand-500" />
+                      </div>
+                    </button>
+                  ))
                 ) : (
-                  /* Hospitality & Generic Events */
-                  eventSchema ? (
-                    (selectedEventCategory === 'hospitality' 
-                      ? eventSchema.hospitality_events || []
-                      : eventSchema.generic_events || []
-                    ).map((event: any) => (
+                  /* Generic: Dynamic events from database */
+                  dynamicEvents.length > 0 ? (
+                    dynamicEvents.map((ev) => (
                       <button
-                        key={event.name || event.event_type}
-                        onClick={() => handleAddStep(event.name || event.event_type, selectedEventCategory)}
+                        key={ev.event_type}
+                        onClick={() => handleAddStep(ev.event_type, 'generic', { label: ev.label || ev.event_type })}
                         className="text-left p-4 border border-slate-200 rounded-lg hover:border-brand-400 hover:bg-brand-50 transition-all group"
                       >
                         <div className="flex items-center gap-3">
                           <div className="p-2 bg-slate-100 rounded-lg group-hover:bg-brand-100">
-                            {selectedEventCategory === 'hospitality' ? (
-                              <Target size={20} className="text-slate-600 group-hover:text-brand-600" />
-                            ) : (
-                              <MousePointerClick size={20} className="text-slate-600 group-hover:text-brand-600" />
-                            )}
+                            <MousePointerClick size={20} className="text-slate-600 group-hover:text-brand-600" />
                           </div>
                           <div className="flex-1">
-                            <div className="font-medium text-slate-800">{event.name}</div>
-                            {event.properties && (
-                              <div className="text-xs text-slate-500 mt-0.5">
-                                {event.properties.length} filterable properties
-                              </div>
-                            )}
+                            <div className="font-medium text-slate-800">{ev.label || ev.event_type}</div>
+                            <div className="text-xs text-slate-500 font-mono">{ev.event_type}</div>
                           </div>
                           <ArrowRight size={16} className="text-slate-300 group-hover:text-brand-500" />
                         </div>
@@ -2023,7 +2116,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, initialMeasurement, is
                   ) : (
                     <div className="text-center py-8 text-slate-400">
                       <div className="animate-spin rounded-full h-8 w-8 border-2 border-slate-300 border-t-brand-500 mx-auto mb-2"></div>
-                      <p className="text-sm">Loading event types...</p>
+                      <p className="text-sm">Loading events from database...</p>
                     </div>
                   )
                 )}
