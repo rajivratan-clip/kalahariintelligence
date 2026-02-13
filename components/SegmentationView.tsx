@@ -425,7 +425,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
               onClick={() => setSegmentMode(mode)}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border-2 text-sm font-medium transition-all ${
                 segmentMode === mode
-                  ? 'border-purple-500 bg-purple-50 text-purple-700'
+                  ? 'border-brand-500 bg-brand-50 text-brand-700'
                   : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
               }`}
             >
@@ -479,7 +479,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Measured as</label>
                 <select
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   value={measurement}
                   onChange={(e) => setMeasurement(e.target.value)}
                 >
@@ -494,7 +494,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">Group By</label>
                 <select
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent"
                   value={groupBy || ''}
                   onChange={(e) => setGroupBy(e.target.value || null)}
                 >
@@ -512,7 +512,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Interval</label>
             <select
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent"
               value={interval}
               onChange={(e) => setInterval(e.target.value)}
             >
@@ -536,7 +536,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
                 onClick={() => toggleBehavioralSegment(seg.id)}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border-2 transition-all ${
                   selectedBehavioralSegments.includes(seg.id)
-                    ? 'border-purple-500 bg-purple-50 text-purple-700'
+                    ? 'border-brand-500 bg-brand-50 text-brand-700'
                     : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'
                 }`}
               >
@@ -559,7 +559,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
                 onClick={() => toggleGuestSegment(seg.id)}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border-2 transition-all ${
                   selectedGuestSegments.includes(seg.id)
-                    ? 'border-purple-500 bg-purple-50 text-purple-700'
+                    ? 'border-brand-500 bg-brand-50 text-brand-700'
                     : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300'
                 }`}
               >
@@ -577,7 +577,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
             <h3 className="text-lg font-bold text-slate-900">Events to Analyze</h3>
             <button
               onClick={handleAddEvent}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors text-sm font-medium"
+              className="flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors text-sm font-medium"
             >
               <Plus size={16} />
               Add Event
@@ -636,7 +636,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
       {/* Loading State */}
       {isLoading && (
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-purple-600 border-t-transparent"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-brand-500 border-t-transparent"></div>
         </div>
       )}
 
@@ -679,7 +679,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Calendar size={20} className="text-purple-600" />
+                  <Calendar size={20} className="text-brand-600" />
                   Sessions by {segmentMode === 'behavioral' ? 'Behavior' : 'Guest'} Over Time
                 </h3>
                 <div className="flex items-center gap-3">
@@ -739,7 +739,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Calendar size={20} className="text-purple-600" />
+                <Calendar size={20} className="text-brand-600" />
                 Trend Over Time
               </h3>
               <div className="flex items-center gap-3">
@@ -790,9 +790,9 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
           )}
 
           {/* Insights */}
-          <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl border border-purple-200 p-6">
+          <div className="bg-gradient-to-br from-brand-50 to-blue-50 rounded-xl border border-brand-200 p-6">
             <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
-              <TrendingUp size={20} className="text-purple-600" />
+              <TrendingUp size={20} className="text-brand-600" />
               💡 Segmentation Insights
             </h3>
             <div className="space-y-2">
@@ -830,7 +830,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
           </p>
           <button
             onClick={handleAddEvent}
-            className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium"
+            className="px-6 py-3 bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors font-medium"
           >
             Add Your First Event
           </button>

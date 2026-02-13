@@ -1,5 +1,5 @@
 from typing import Any, List, Optional, Dict
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import run_query
@@ -356,17 +356,118 @@ async def get_schema() -> Dict[str, Any]:
             print(f"Warning: Could not fetch custom events: {e}")
             # Don't fail the whole request if custom events can't be fetched
         
+        # Get last scan timestamp (current time for now, can be enhanced with actual tracking)
+        last_scan_timestamp = datetime.now().isoformat()
+        
         return {
             "generic_events": generic_events,
             "hospitality_events": hospitality_events,
             "custom_events": custom_events,  # NEW: Include custom events
             "all_properties": all_properties,
             "db_event_types": db_event_types,  # Raw event_type values from DB
-            "group_by_options": ["device_type", "browser", "utm_source", "utm_medium", "guest_segment"]
+            "group_by_options": ["device_type", "browser", "utm_source", "utm_medium", "guest_segment"],
+            "last_scan_timestamp": last_scan_timestamp  # Track schema changes
         }
         
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Schema query error: {str(exc)}")
+
+
+@app.get("/api/metadata/schema/detailed")
+async def get_detailed_schema() -> Dict[str, Any]:
+    """
+    Returns detailed schema information including:
+    - Event frequency data (how often each event occurs)
+    - Page URL patterns for context
+    - Event property correlation data
+    - Last scan timestamp
+    """
+    try:
+        # Get event frequency data
+        frequency_query = """
+            SELECT 
+                event_type,
+                count(*) as event_count,
+                count(DISTINCT user_id) as unique_users,
+                count(DISTINCT session_id) as unique_sessions,
+                min(timestamp) as first_seen,
+                max(timestamp) as last_seen
+            FROM raw_events
+            GROUP BY event_type
+            ORDER BY event_count DESC
+        """
+        frequency_rows = run_query(frequency_query)
+        event_frequency = []
+        for row in frequency_rows:
+            event_frequency.append({
+                "event_type": row[0],
+                "event_count": row[1],
+                "unique_users": row[2],
+                "unique_sessions": row[3],
+                "first_seen": str(row[4]) if row[4] else None,
+                "last_seen": str(row[5]) if row[5] else None,
+            })
+        
+        # Get page_url patterns (top 20 most common patterns)
+        page_url_query = """
+            SELECT 
+                page_url,
+                count(*) as occurrence_count,
+                count(DISTINCT event_type) as event_types_count
+            FROM raw_events
+            WHERE page_url != '' AND page_url IS NOT NULL
+            GROUP BY page_url
+            ORDER BY occurrence_count DESC
+            LIMIT 20
+        """
+        page_url_rows = run_query(page_url_query)
+        page_url_patterns = []
+        for row in page_url_rows:
+            page_url_patterns.append({
+                "page_url": row[0],
+                "occurrence_count": row[1],
+                "event_types_count": row[2],
+            })
+        
+        # Get property correlation data (which properties co-occur with which events)
+        # Sample: device_type distribution per event_type
+        correlation_query = """
+            SELECT 
+                event_type,
+                device_type,
+                count(*) as count
+            FROM raw_events
+            WHERE device_type != '' AND device_type IS NOT NULL
+            GROUP BY event_type, device_type
+            ORDER BY event_type, count DESC
+        """
+        correlation_rows = run_query(correlation_query)
+        property_correlations = {}
+        for row in correlation_rows:
+            event_type = row[0]
+            device_type = row[1]
+            count = row[2]
+            if event_type not in property_correlations:
+                property_correlations[event_type] = {}
+            if "device_type" not in property_correlations[event_type]:
+                property_correlations[event_type]["device_type"] = []
+            property_correlations[event_type]["device_type"].append({
+                "value": device_type,
+                "count": count
+            })
+        
+        # Get last scan timestamp
+        last_scan_timestamp = datetime.now().isoformat()
+        
+        return {
+            "event_frequency": event_frequency,
+            "page_url_patterns": page_url_patterns,
+            "property_correlations": property_correlations,
+            "last_scan_timestamp": last_scan_timestamp
+        }
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Detailed schema query error: {str(exc)}")
 
 
 # ============================================================================
@@ -3433,6 +3534,7 @@ class AiInsightRequest(BaseModel):
     context_name: str
     data: Any
     user_query: Optional[str] = None
+    root_cause_analysis: Optional[bool] = False  # Flag to enable root cause analysis
 
 
 def call_azure_gpt(messages: List[Dict[str, str]]) -> str:
@@ -3576,6 +3678,13 @@ async def generate_ai_insight(request: AiInsightRequest) -> Dict[str, Any]:
                 "4) **Diagnose Root Causes**: Reference friction_data, latency_data, and path_analysis to explain WHY users drop off (but do not invent data).\n"
                 "5) **Generate Hypotheses**: Provide 2-3 testable hypotheses based on the specific step and data patterns.\n"
                 "6) **Recommend Actions**: Concrete, step-specific fixes (not generic advice).\n\n"
+                "## Root Cause Analysis Mode:\n"
+                "When root_cause_analysis is enabled, provide a structured breakdown:\n"
+                "- **Primary Cause**: The main factor driving the anomaly (device, traffic source, segment, etc.)\n"
+                "- **Contributing Factors**: Secondary factors that amplify the issue\n"
+                "- **Segment Breakdown**: How different segments (device_type, traffic_source, guest_segment) are affected\n"
+                "- **Causal Chain**: Step-by-step explanation of why this is happening\n"
+                "- **Confidence Level**: High/Medium/Low based on data availability\n\n"
                 "## Output Guidelines:\n"
                 "- **ALWAYS reference actual numbers** from funnel_conversion (e.g., '1,234 users dropped at Room Select = 64% drop-off').\n"
                 "- Use markdown: **bold** for metrics, bullet lists, ## headings.\n"
@@ -3598,6 +3707,18 @@ async def generate_ai_insight(request: AiInsightRequest) -> Dict[str, Any]:
                 max_dropoff_step = max(funnel_steps[1:], key=lambda x: x.get('drop_off_count', 0), default=None)
                 if max_dropoff_step:
                     data_summary += f"- Biggest Drop-off: {max_dropoff_step.get('step_name', 'Unknown')} ({max_dropoff_step.get('drop_off_count', 0):,} users, {max_dropoff_step.get('drop_off_rate', 0):.1f}%)\n"
+            root_cause_instructions = ""
+            if request.root_cause_analysis:
+                root_cause_instructions = (
+                    "\n\n**ROOT CAUSE ANALYSIS MODE ENABLED:**\n"
+                    "Provide a structured root cause breakdown:\n"
+                    "- **Primary Cause**: The main factor driving the anomaly (device type, traffic source, segment, etc.)\n"
+                    "- **Contributing Factors**: Secondary factors that amplify the issue\n"
+                    "- **Segment Breakdown**: How different segments (device_type, traffic_source, guest_segment) are affected\n"
+                    "- **Causal Chain**: Step-by-step explanation of why this is happening\n"
+                    "- **Confidence Level**: High/Medium/Low based on data availability\n"
+                )
+            
             user_content = (
                 "# Kalahari Resorts Funnel Analysis Request\n\n"
                 f"**Context:** {request.context_name}\n"
@@ -3609,7 +3730,8 @@ async def generate_ai_insight(request: AiInsightRequest) -> Dict[str, Any]:
                 "1. Focus on the `funnel_conversion` array - analyze ACTUAL NUMBERS (visitors, drop_off_count, conversion_rate)\n"
                 "2. Identify which step has the highest drop-off (look at drop_off_count and drop_off_rate)\n"
                 "3. Calculate revenue impact: drop_off_count × $260\n"
-                "4. Provide specific, actionable recommendations for that exact funnel step\n\n"
+                "4. Provide specific, actionable recommendations for that exact funnel step"
+                f"{root_cause_instructions}\n\n"
                 "**Response Structure:**\n"
                 "## Key Takeaway\n"
                 "[1-2 sentences highlighting the biggest issue with specific numbers]\n\n"
@@ -3648,6 +3770,7 @@ class GuidedBuildRequest(BaseModel):
     # Optional: current view config from frontend (AnalyticsStudio / SegmentationView)
     # Example: {"analysis_type": "funnel", "measurement": "conversion", "layout_template": "..."}
     current_view: Optional[Dict[str, Any]] = None
+    generate_ui: Optional[bool] = False  # Flag to generate UI component spec JSON
 
 
 # Standard funnel steps for guided build (hospitality booking)
@@ -3720,12 +3843,33 @@ async def guided_build(request: GuidedBuildRequest) -> Dict[str, Any]:
             "- If unclear, ask ONE short follow-up question. Do NOT include config_updates in that case.\n"
             "- HOSPITALITY_STEPS = Landed, Location Select, Date Select, Room Select, Payment, Confirmation (event_category: hospitality).\n"
         )
+        
+        ui_generation_instructions = ""
+        if request.generate_ui:
+            ui_generation_instructions = (
+                "\n\n**UI GENERATION MODE ENABLED:**\n"
+                "In addition to config_updates, also return a `component_spec` JSON object:\n"
+                "{\n"
+                '  "component": "AreaChart" | "BarChart" | "LineChart" | "PieChart" | "ComposedChart",\n'
+                '  "data": [...],  // Chart data array\n'
+                '  "config": {\n'
+                '    "xKey": "name",  // X-axis key\n'
+                '    "yKey": "value",  // Y-axis key\n'
+                '    "dataKey": "value",  // Data key\n'
+                '    "title": "Chart Title",\n'
+                '    "colors": ["#8b5cf6", "#ec4899", ...]\n'
+                "  },\n"
+                '  "title": "Chart Title"\n'
+                "}\n"
+                "The component_spec will be used to render the chart dynamically."
+            )
 
         user_content = (
             f"Current state: analysis_type={analysis_type}, has_steps={has_steps}\n\n"
             f"User said: {user_text}\n\n"
             f"Current view (if any): {json.dumps(view, default=str)}\n\n"
             "Reply with a brief friendly message. If you can build a chart, end with a JSON block containing config_updates."
+            f"{ui_generation_instructions}"
         )
 
         raw = call_azure_gpt([
@@ -3734,11 +3878,14 @@ async def guided_build(request: GuidedBuildRequest) -> Dict[str, Any]:
         ])
 
         config_updates = None
+        component_spec = None
         json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", raw)
         if json_match:
             try:
                 parsed = json.loads(json_match.group(1))
                 config_updates = parsed.get("config_updates")
+                if request.generate_ui:
+                    component_spec = parsed.get("component_spec")
             except Exception:
                 pass
 
@@ -3823,7 +3970,10 @@ async def guided_build(request: GuidedBuildRequest) -> Dict[str, Any]:
         else:
             message = message or "I couldn't build a chart from that. Try: \"Build a booking funnel\" or \"Show behavioral segments\"."
 
-        return {"message": message, "config_updates": config_updates}
+        result = {"message": message, "config_updates": config_updates}
+        if request.generate_ui and component_spec:
+            result["component_spec"] = component_spec
+        return result
 
     except HTTPException:
         raise
@@ -3933,6 +4083,1322 @@ async def suggest_questions(request: AiSuggestRequest) -> Dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"AI suggest-questions error: {str(exc)}")
+
+
+class SuggestionRequest(BaseModel):
+    """Request for generating context-aware suggestions."""
+    current_view_config: Optional[Dict[str, Any]] = None
+    session_history: Optional[List[Dict[str, Any]]] = []
+
+
+class SummarizeConversationRequest(BaseModel):
+    """Request for summarizing a conversation."""
+    messages: List[Dict[str, str]]
+
+
+@app.post("/api/ai/summarize-conversation")
+async def summarize_conversation(request: SummarizeConversationRequest) -> Dict[str, Any]:
+    """
+    Summarize a conversation for context compression.
+    Reduces token usage for long sessions while maintaining context continuity.
+    """
+    try:
+        messages = request.messages
+        
+        if len(messages) < 3:
+            return {"summary": "Conversation too short to summarize."}
+        
+        system_prompt = (
+            "You are a conversation summarizer for an analytics platform.\n"
+            "Summarize the key points, questions asked, and insights provided in this conversation.\n"
+            "Keep it concise (2-3 sentences) and focus on the main analysis topics and findings.\n"
+            "Return only the summary text, no additional formatting."
+        )
+        
+        user_content = "Summarize this conversation:\n\n"
+        for msg in messages[-20:]:  # Last 20 messages
+            role = msg.get('role', 'user')
+            text = msg.get('text', '')
+            user_content += f"{role}: {text}\n"
+        
+        summary = call_azure_gpt([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ])
+        
+        return {"summary": summary.strip()}
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Conversation summarization error: {str(exc)}")
+
+
+class SegmentDiscoveryRequest(BaseModel):
+    """Request for discovering high-value segments."""
+    time_period_days: int = 30
+    min_sessions: int = 100
+
+
+@app.post("/api/ai/discover-segments")
+async def discover_segments_endpoint(request: SegmentDiscoveryRequest) -> Dict[str, Any]:
+    """
+    Auto-discover high-value segments using RFM + behavioral clustering.
+    Uses Azure GPT to name segments.
+    """
+    try:
+        from engines.segmentDiscovery import discover_segments
+        
+        segments = await discover_segments(
+            time_period_days=request.time_period_days,
+            min_sessions=request.min_sessions
+        )
+        
+        return {
+            "segments": segments,
+            "count": len(segments),
+        }
+        
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="Segment discovery module not available"
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Segment discovery error: {str(exc)}")
+
+
+class ChartInsightsRequest(BaseModel):
+    """Request for generating micro-insights from chart data."""
+    chart_data: List[Dict[str, Any]]
+    chart_type: str
+    persona: str = "Hospitality Forensic Analyst"
+    max_insights: int = 3
+
+
+class AutonomousBuildRequest(BaseModel):
+    """Request for autonomous chart building with mutation support."""
+    query: str
+    current_config: Optional[Dict[str, Any]] = None
+    mutation_mode: bool = False
+    generate_ui: bool = True
+
+
+class ParseFunnelQueryRequest(BaseModel):
+    """Request for parsing natural language funnel query."""
+    query: str
+    current_config: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/ai/parse-funnel-query")
+async def parse_funnel_query(request: ParseFunnelQueryRequest) -> Dict[str, Any]:
+    """
+    Parse natural language query to extract ALL funnel parameters:
+    - Steps (landed, location select, etc.)
+    - Segment comparison (device type = mobile)
+    - Counting method (unique users, sessions, events)
+    - Completed within (1 day, 7 days, etc.)
+    - Date range
+    """
+    try:
+        query = request.query.lower()
+        current_config = request.current_config or {}
+
+        system_prompt = (
+            "You are an intelligent funnel query parser for a hospitality analytics platform.\n"
+            "Your job is to understand ANY natural language query and extract funnel parameters, regardless of how the user phrases it.\n"
+            "Be flexible and interpret user intent - don't just match keywords. Handle synonyms, variations, and different phrasings.\n\n"
+            "Return JSON with:\n"
+            "{\n"
+            '  "steps": ["landed", "location select", "date select", "room select"],\n'
+            '  "viewType": "conversion" | "overTime" | "timeToConvert" | "frequency" | "improvement" | "significance",\n'
+            '  "segmentComparisons": [{"dimension": "device_type", "value": "mobile"}, {"dimension": "device_type", "value": "tablet"}] OR null,\n'
+            '  "countingBy": "unique_users" | "sessions" | "events",\n'
+            '  "completedWithin": 1 (number of days),\n'
+            '  "dateRange": {"start": "2024-01-01", "end": "2024-01-31"} OR null,\n'
+            '  "explanation": "Built over time funnel with 4 steps comparing mobile vs tablet",\n'
+            '  "confidence": 95\n'
+            "}\n\n"
+            "IMPORTANT: Interpret flexibly. Users may phrase things differently:\n\n"
+            "View Types (Measured As) - interpret ANY phrasing that means:\n"
+            "- Conversion/Conversion Rate/Step-by-step/Classic funnel → \"conversion\"\n"
+            "- Over time/Trends/Temporal/Time series/How it changes over time → \"overTime\"\n"
+            "- Time to convert/Duration/How long it takes/Speed → \"timeToConvert\"\n"
+            "- Frequency/How often → \"frequency\"\n"
+            "- Improvement/Progress → \"improvement\"\n"
+            "- Significance/Statistical significance → \"significance\"\n\n"
+            "Step names - recognize ANY way users refer to funnel steps:\n"
+            "- Landing/Landed/Homepage/Arrived/Page view → \"landed\"\n"
+            "- Location/Location select/Picked location/Chose destination/Selected resort → \"location select\"\n"
+            "- Date/Date select/Calendar/Check-in dates/Selected dates → \"date select\"\n"
+            "- Room/Room select/Room type/Selected room/Chose room → \"room select\"\n"
+            "- Payment/Pay/Checkout/Payment page/Credit card → \"payment\"\n"
+            "- Confirmation/Confirm/Success/Thank you/Completed → \"confirmation\"\n"
+            "- Also extract ANY custom step names the user mentions\n\n"
+            "Segment Comparisons - handle ANY comparison phrasing:\n"
+            "- 'vs', 'versus', 'compared to', 'compare', 'against', 'between X and Y'\n"
+            "- 'mobile vs tablet', 'mobile compared to tablet', 'compare mobile and tablet'\n"
+            "- 'device type = mobile', 'mobile devices', 'only mobile', 'for mobile users'\n"
+            "- Extract dimension and value from ANY property mentioned (device_type, guest_segment, traffic_source, browser, os, etc.)\n"
+            "- Extract ANY segment values mentioned (mobile, tablet, desktop, family, business, google, facebook, etc.)\n\n"
+            "Counting methods - interpret ANY phrasing:\n"
+            "- Unique users/Users/Unique visitors/Per user/By user → \"unique_users\"\n"
+            "- Sessions/Session-based/Per session → \"sessions\"\n"
+            "- Events/Event-based/Per event → \"events\"\n"
+            "- If not specified, default to \"unique_users\"\n\n"
+            "Time windows - extract ANY time reference:\n"
+            "- '1 day', '1d', 'within 1 day', '1 day window', 'daily', 'same day' → 1\n"
+            "- '7 days', '1 week', '7d', 'weekly', 'within a week' → 7\n"
+            "- '30 days', '1 month', '30d', 'monthly', 'within a month' → 30\n"
+            "- Extract numbers from phrases like 'completed in X days', 'within X days', 'X day period'\n"
+            "- If not specified, default to 30\n\n"
+            "Be smart: If the user says 'show me', 'I want', 'create', 'build', 'make', 'generate' - extract the intent.\n"
+            "If they mention dates, extract dateRange. If they mention segments, extract segmentComparisons.\n"
+            "Don't require exact keyword matches - understand the meaning."
+        )
+
+        user_prompt = (
+            f"User Query: {request.query}\n\n"
+            f"Current Config (if mutating): {json.dumps(current_config, default=str) if current_config else 'None'}\n\n"
+            "Extract ALL parameters. Return JSON only."
+        )
+
+        try:
+            ai_response = call_azure_gpt([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+
+            import re
+            json_match = re.search(r"\{[\s\S]*\}", ai_response)
+            if json_match:
+                parsed = json.loads(json_match.group(0))
+                
+                # Validate and normalize - AI should handle this, but validate
+                steps = parsed.get("steps", [])
+                if not steps or len(steps) == 0:
+                    # AI failed to extract steps - try flexible extraction
+                    query_lower = query.lower()
+                    step_patterns = {
+                        'landed': ['landed', 'landing', 'homepage', 'arrived', 'page view', 'pageview'],
+                        'location select': ['location', 'location select', 'picked location', 'chose destination', 'selected resort', 'destination'],
+                        'date select': ['date', 'date select', 'calendar', 'checkin', 'check-in', 'selected dates', 'dates'],
+                        'room select': ['room', 'room select', 'room type', 'selected room', 'chose room'],
+                        'payment': ['payment', 'pay', 'checkout', 'payment page', 'credit card', 'billing'],
+                        'confirmation': ['confirmation', 'confirm', 'success', 'thank you', 'completed', 'done'],
+                    }
+                    steps = []
+                    for step_name, patterns in step_patterns.items():
+                        if any(pattern in query_lower for pattern in patterns):
+                            steps.append(step_name)
+                    
+                    if not steps:
+                        # Last resort: default steps
+                        steps = ['landed', 'location select', 'date select', 'room select']
+
+                # Normalize counting method - AI should handle this, but validate
+                counting_by = parsed.get("countingBy", "unique_users")
+                if counting_by not in ["unique_users", "sessions", "events"]:
+                    query_lower = query.lower()
+                    if any(word in query_lower for word in ["session", "sessions", "per session", "session-based"]):
+                        counting_by = "sessions"
+                    elif any(word in query_lower for word in ["event", "events", "per event", "event-based"]):
+                        counting_by = "events"
+                    elif any(word in query_lower for word in ["user", "users", "unique", "visitor", "visitors", "per user"]):
+                        counting_by = "unique_users"
+                    else:
+                        counting_by = "unique_users"  # Default
+
+                # Extract view type (measured as) - AI should handle this, but validate
+                view_type = parsed.get("viewType", "conversion")
+                if view_type not in ["conversion", "overTime", "timeToConvert", "frequency", "improvement", "significance"]:
+                    # Infer from query with flexible matching
+                    query_lower = query.lower()
+                    if any(phrase in query_lower for phrase in ["over time", "overtime", "trend", "trends", "temporal", "time series", "how it changes"]):
+                        view_type = "overTime"
+                    elif any(phrase in query_lower for phrase in ["time to convert", "duration", "how long", "speed", "time taken"]):
+                        view_type = "timeToConvert"
+                    elif any(phrase in query_lower for phrase in ["frequency", "how often"]):
+                        view_type = "frequency"
+                    elif any(phrase in query_lower for phrase in ["improvement", "progress"]):
+                        view_type = "improvement"
+                    elif any(phrase in query_lower for phrase in ["significance", "statistical"]):
+                        view_type = "significance"
+                    else:
+                        view_type = "conversion"  # Default
+
+                # Extract completed within - AI should handle this, but validate
+                completed_within = parsed.get("completedWithin", 30)
+                # Try to extract number from various patterns
+                day_patterns = [
+                    r"(\d+)\s*day",
+                    r"(\d+)\s*d\b",
+                    r"within\s+(\d+)\s*day",
+                    r"(\d+)\s*day\s+window",
+                    r"completed\s+in\s+(\d+)\s*day",
+                    r"(\d+)\s*day\s+period",
+                ]
+                for pattern in day_patterns:
+                    day_match = re.search(pattern, query.lower())
+                    if day_match:
+                        completed_within = int(day_match.group(1))
+                        break
+                
+                # Also check for week/month patterns
+                if "week" in query.lower() or "weekly" in query.lower():
+                    week_match = re.search(r"(\d+)\s*week", query.lower())
+                    if week_match:
+                        completed_within = int(week_match.group(1)) * 7
+                elif "month" in query.lower() or "monthly" in query.lower():
+                    month_match = re.search(r"(\d+)\s*month", query.lower())
+                    if month_match:
+                        completed_within = int(month_match.group(1)) * 30
+
+                # Extract segment comparisons - AI should handle this, but validate
+                segment_comparisons = parsed.get("segmentComparisons")
+                if not segment_comparisons:
+                    # Try to infer from query with flexible matching
+                    query_lower = query.lower()
+                    segments_list = []
+                    
+                    # Common device types
+                    device_types = ['mobile', 'tablet', 'desktop', 'phone', 'smartphone']
+                    # Common guest segments
+                    guest_segments = ['family', 'business', 'couple', 'couples', 'vip', 'corporate', 'groups']
+                    # Common traffic sources
+                    traffic_sources = ['google', 'facebook', 'instagram', 'bing', 'email', 'direct']
+                    
+                    # Check for comparison patterns (vs, versus, compared to, compare, between X and Y)
+                    comparison_keywords = ['vs', 'versus', 'compared to', 'compare', 'against', 'between', 'and']
+                    
+                    # Try to find device comparisons
+                    found_devices = [dt for dt in device_types if dt in query_lower]
+                    if len(found_devices) >= 2:
+                        # Multiple devices mentioned - likely a comparison
+                        segments_list = [{"dimension": "device_type", "value": dt} for dt in found_devices[:2]]
+                    elif len(found_devices) == 1:
+                        # Single device mentioned
+                        segments_list = [{"dimension": "device_type", "value": found_devices[0]}]
+                    
+                    # Try guest segments
+                    if not segments_list:
+                        found_segments = [gs for gs in guest_segments if gs in query_lower]
+                        if len(found_segments) >= 2:
+                            segments_list = [{"dimension": "guest_segment", "value": gs.capitalize()} for gs in found_segments[:2]]
+                        elif len(found_segments) == 1:
+                            segments_list = [{"dimension": "guest_segment", "value": found_segments[0].capitalize()}]
+                    
+                    # Try traffic sources
+                    if not segments_list:
+                        found_sources = [ts for ts in traffic_sources if ts in query_lower]
+                        if len(found_sources) >= 2:
+                            segments_list = [{"dimension": "traffic_source", "value": ts} for ts in found_sources[:2]]
+                        elif len(found_sources) == 1:
+                            segments_list = [{"dimension": "traffic_source", "value": found_sources[0]}]
+                    
+                    segment_comparisons = segments_list if segments_list else None
+                elif isinstance(segment_comparisons, dict):
+                    # Single segment as dict, convert to list
+                    segment_comparisons = [segment_comparisons]
+
+                return {
+                    "steps": steps,
+                    "viewType": view_type,
+                    "segmentComparisons": segment_comparisons,
+                    "countingBy": counting_by,
+                    "completedWithin": completed_within,
+                    "dateRange": parsed.get("dateRange"),
+                    "explanation": parsed.get("explanation", f"Built {view_type} funnel with {len(steps)} steps"),
+                    "confidence": parsed.get("confidence", 90),
+                    "extractedParams": {
+                        "steps": steps,
+                        "viewType": view_type,
+                        "segmentComparisons": segment_comparisons,
+                        "countingBy": counting_by,
+                        "completedWithin": completed_within,
+                        "dateRange": parsed.get("dateRange"),
+                    },
+                }
+        except Exception as e:
+            print(f"AI parsing error: {e}")
+            # Fallback parsing
+            pass
+
+        # Fallback: rule-based parsing
+        return parse_query_fallback(request.query)
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Parse query error: {str(exc)}")
+
+
+def parse_query_fallback(query: str) -> Dict[str, Any]:
+    """Fallback rule-based parser - more flexible keyword matching."""
+    import re
+    lower = query.lower()
+    
+    # Extract steps with flexible patterns
+    step_patterns = {
+        'landed': ['landed', 'landing', 'homepage', 'arrived', 'page view', 'pageview', 'start'],
+        'location select': ['location', 'location select', 'picked location', 'chose destination', 'selected resort', 'destination', 'where'],
+        'date select': ['date', 'date select', 'calendar', 'checkin', 'check-in', 'selected dates', 'dates', 'when'],
+        'room select': ['room', 'room select', 'room type', 'selected room', 'chose room', 'accommodation'],
+        'payment': ['payment', 'pay', 'checkout', 'payment page', 'credit card', 'billing', 'paid'],
+        'confirmation': ['confirmation', 'confirm', 'success', 'thank you', 'completed', 'done', 'finished'],
+    }
+    
+    steps = []
+    for step_name, patterns in step_patterns.items():
+        if any(pattern in lower for pattern in patterns):
+            steps.append(step_name)
+    
+    if not steps:
+        steps = ['landed', 'location select', 'date select', 'room select']
+    
+    # Extract view type with flexible matching
+    view_type = "conversion"
+    if any(phrase in lower for phrase in ["over time", "overtime", "trend", "trends", "temporal", "time series"]):
+        view_type = "overTime"
+    elif any(phrase in lower for phrase in ["time to convert", "duration", "how long", "speed", "time taken"]):
+        view_type = "timeToConvert"
+    elif "frequency" in lower or "how often" in lower:
+        view_type = "frequency"
+    elif "improvement" in lower or "progress" in lower:
+        view_type = "improvement"
+    elif "significance" in lower or "statistical" in lower:
+        view_type = "significance"
+    
+    # Extract counting method with flexible matching
+    counting_by = "unique_users"
+    if any(word in lower for word in ["unique user", "unique users", "users", "visitor", "visitors", "per user", "by user"]):
+        counting_by = "unique_users"
+    elif any(word in lower for word in ["session", "sessions", "per session", "session-based"]):
+        counting_by = "sessions"
+    elif any(word in lower for word in ["event", "events", "per event", "event-based"]):
+        counting_by = "events"
+    
+    # Extract completed within with flexible patterns
+    completed_within = 30
+    day_patterns = [
+        r"(\d+)\s*day",
+        r"(\d+)\s*d\b",
+        r"within\s+(\d+)\s*day",
+        r"(\d+)\s*day\s+window",
+        r"completed\s+in\s+(\d+)\s*day",
+        r"(\d+)\s*day\s+period",
+    ]
+    for pattern in day_patterns:
+        day_match = re.search(pattern, lower)
+        if day_match:
+            completed_within = int(day_match.group(1))
+            break
+    
+    # Check for week/month patterns
+    if "week" in lower or "weekly" in lower:
+        week_match = re.search(r"(\d+)\s*week", lower)
+        if week_match:
+            completed_within = int(week_match.group(1)) * 7
+    elif "month" in lower or "monthly" in lower:
+        month_match = re.search(r"(\d+)\s*month", lower)
+        if month_match:
+            completed_within = int(month_match.group(1)) * 30
+    
+    # Extract segment comparisons with flexible matching
+    segment_comparisons = None
+    device_types = ['mobile', 'tablet', 'desktop', 'phone', 'smartphone']
+    guest_segments = ['family', 'business', 'couple', 'couples', 'vip', 'corporate', 'groups']
+    traffic_sources = ['google', 'facebook', 'instagram', 'bing', 'email', 'direct']
+    
+    comparison_keywords = ['vs', 'versus', 'compared to', 'compare', 'against', 'between', 'and']
+    has_comparison = any(kw in lower for kw in comparison_keywords)
+    
+    # Try device comparisons
+    found_devices = [dt for dt in device_types if dt in lower]
+    if len(found_devices) >= 2:
+        segment_comparisons = [{"dimension": "device_type", "value": dt} for dt in found_devices[:2]]
+    elif len(found_devices) == 1 and (has_comparison or "device" in lower):
+        segment_comparisons = [{"dimension": "device_type", "value": found_devices[0]}]
+    
+    # Try guest segments
+    if not segment_comparisons:
+        found_segments = [gs for gs in guest_segments if gs in lower]
+        if len(found_segments) >= 2:
+            segment_comparisons = [{"dimension": "guest_segment", "value": gs.capitalize()} for gs in found_segments[:2]]
+        elif len(found_segments) == 1:
+            segment_comparisons = [{"dimension": "guest_segment", "value": found_segments[0].capitalize()}]
+    
+    # Try traffic sources
+    if not segment_comparisons:
+        found_sources = [ts for ts in traffic_sources if ts in lower]
+        if len(found_sources) >= 2:
+            segment_comparisons = [{"dimension": "traffic_source", "value": ts} for ts in found_sources[:2]]
+        elif len(found_sources) == 1:
+            segment_comparisons = [{"dimension": "traffic_source", "value": found_sources[0]}]
+    
+    return {
+        "steps": steps,
+        "viewType": view_type,
+        "segmentComparisons": segment_comparisons,
+        "countingBy": counting_by,
+        "completedWithin": completed_within,
+        "dateRange": None,
+        "explanation": f"Built {view_type} funnel with {len(steps)} steps",
+        "confidence": 75,
+        "extractedParams": {
+            "steps": steps,
+            "viewType": view_type,
+            "segmentComparisons": segment_comparisons,
+            "countingBy": counting_by,
+            "completedWithin": completed_within,
+        },
+    }
+
+
+@app.post("/api/ai/autonomous-build")
+async def autonomous_build(request: AutonomousBuildRequest) -> Dict[str, Any]:
+    """
+    Autonomous chart builder with NL-to-Config and mutation mode.
+    Handles both "build new" and "mutate existing" workflows.
+    """
+    try:
+        query = request.query
+        current_config = request.current_config or {}
+        mutation_mode = request.mutation_mode
+        generate_ui = request.generate_ui
+
+        # Detect intent: mutation vs new build
+        if mutation_mode and current_config:
+            # Mutation mode: modify existing config
+            system_prompt = (
+                "You are an autonomous chart builder for a hospitality analytics platform.\n"
+                "The user wants to MODIFY an existing chart configuration.\n"
+                "Analyze the current config and the user's request, then return ONLY the fields that need to change.\n"
+                "Return JSON: {\"config_updates\": {...}, \"explanation\": \"...\", \"confidence\": 0-100, \"suggested_mutation\": \"...\"}\n"
+                "Only include fields that are being changed - don't repeat unchanged fields."
+            )
+        else:
+            # New build mode
+            system_prompt = (
+                "You are an autonomous chart builder for a hospitality analytics platform.\n"
+                "Convert natural language to chart configuration.\n"
+                "Return JSON: {\"config_updates\": {...}, \"explanation\": \"...\", \"confidence\": 0-100, \"component_spec\": {...}}\n"
+                "component_spec should include: component type, data structure, config for rendering."
+            )
+
+        user_prompt = (
+            f"User Query: {query}\n\n"
+        )
+        
+        if mutation_mode and current_config:
+            user_prompt += (
+                f"Current Config: {json.dumps(current_config, default=str)}\n\n"
+                "Modify ONLY the fields mentioned in the query. Return the changed fields in config_updates."
+            )
+        else:
+            user_prompt += (
+                "Build a new chart configuration based on this query. "
+                "Include component_spec for dynamic rendering."
+            )
+
+        ai_response = call_azure_gpt([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ])
+
+        # Parse response
+        import re
+        json_match = re.search(r"\{[\s\S]*\}", ai_response)
+        if json_match:
+            parsed = json.loads(json_match.group(0))
+            return {
+                "config_updates": parsed.get("config_updates", {}),
+                "component_spec": parsed.get("component_spec") if generate_ui else None,
+                "explanation": parsed.get("explanation", "Chart configured successfully"),
+                "confidence": parsed.get("confidence", 100),
+                "suggested_mutation": parsed.get("suggested_mutation"),
+            }
+
+        # Fallback
+        return {
+            "config_updates": {},
+            "explanation": "Unable to parse chart configuration",
+            "confidence": 50,
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Autonomous build error: {str(exc)}")
+
+
+@app.post("/api/ai/chart-insights")
+async def generate_chart_insights(request: ChartInsightsRequest) -> Dict[str, Any]:
+    """
+    Generate micro-insights from chart data.
+    Analyzes patterns and returns insights with suggested actions.
+    
+    Now enabled with proper error handling - returns empty insights on failure instead of breaking.
+    """
+    try:
+        # Validate request structure
+        if not hasattr(request, 'chart_data') or not hasattr(request, 'chart_type'):
+            print("ERROR: Invalid request structure - missing chart_data or chart_type")
+            return {"insights": []}
+        
+        chart_data = request.chart_data
+        chart_type = request.chart_type
+        persona = getattr(request, 'persona', 'Hospitality Forensic Analyst')
+        max_insights = getattr(request, 'max_insights', 3)
+    
+        if not chart_data or len(chart_data) == 0:
+            print(f"WARNING: Empty chart_data for chart_type={chart_type}")
+            return {"insights": []}
+        
+        print(f"DEBUG: Generating insights for chart_type={chart_type}, data_points={len(chart_data)}")
+    
+        # Detect patterns in data
+        insights = []
+         
+        # Calculate statistics
+        values = []
+        for item in chart_data:
+            # Support multiple value field names
+            val = item.get('value') or item.get('y') or item.get('count') or item.get('visitors') or 0
+            if isinstance(val, (int, float)) and not (isinstance(val, float) and val != val):  # Check for NaN
+                values.append(float(val))
+    
+        # For KPI charts, we need at least 2 values, but we'll handle it specially below
+        if len(values) < 2 and chart_type != 'kpi':
+            return {"insights": []}
+        
+        # For KPI with only 1 value, duplicate it to create a comparison
+        # This ensures we always have at least 2 data points for trend analysis
+        if len(values) == 1 and chart_type == 'kpi':
+            # Use the same value twice (no change) rather than simulating
+            values = [values[0], values[0]]
+            # Also update chart_data to match
+            if len(chart_data) == 1:
+                chart_data = [
+                    {**chart_data[0], 'name': 'Previous'},
+                    {**chart_data[0], 'name': 'Current'}
+                ]
+
+        mean = sum(values) / len(values)
+        max_val = max(values)
+        min_val = min(values)
+        max_idx = values.index(max_val)
+        min_idx = values.index(min_val)
+
+        # Detect spikes
+        threshold = mean * 1.15  # 15% above mean
+        if max_val > threshold:
+            spike_data = chart_data[max_idx]
+            spike_label = spike_data.get('name') or spike_data.get('date') or f"Point {max_idx + 1}"
+            
+            system_prompt = (
+                f"You are a {persona} for a hospitality analytics platform.\n"
+                "Analyze chart data and generate a concise micro-insight (< 100 words).\n"
+                "Return JSON: {\"headline\": \"...\", \"explanation\": \"...\", \"confidence\": 0-100, \"category\": \"spike|drop|anomaly|trend|correlation|opportunity\", \"suggestedActions\": [{\"label\": \"...\", \"action\": \"...\"}]}"
+            )
+            
+            user_prompt = (
+                f"Chart Type: {chart_type}\n"
+                f"Data Point: {spike_label} has value {max_val:.1f} (mean: {mean:.1f})\n"
+                f"Full Data: {json.dumps(chart_data[:10], default=str)}\n\n"
+                "Generate a micro-insight explaining this spike. Include 1-2 suggested actions."
+            )
+
+            try:
+                ai_response = call_azure_gpt([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ])
+
+                # Robust JSON extraction and parsing
+                insight_data = None
+                import re
+                
+                # Try multiple JSON extraction strategies
+                json_patterns = [
+                    r"```(?:json)?\s*(\{[\s\S]*?\})\s*```",  # JSON in code blocks
+                    r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})",  # Balanced braces (non-greedy)
+                    r"(\{[\s\S]*?\})",  # First JSON object (non-greedy)
+                ]
+                
+                for pattern in json_patterns:
+                    json_match = re.search(pattern, ai_response)
+                    if json_match:
+                        json_str = json_match.group(1)
+                        try:
+                            # Try to parse as-is
+                            insight_data = json.loads(json_str)
+                            break
+                        except json.JSONDecodeError:
+                            # Try to fix common JSON issues
+                            try:
+                                # Remove trailing commas
+                                json_str = re.sub(r',\s*}', '}', json_str)
+                                json_str = re.sub(r',\s*]', ']', json_str)
+                                # Fix unescaped quotes in strings (basic attempt)
+                                insight_data = json.loads(json_str)
+                                break
+                            except json.JSONDecodeError:
+                                continue
+                
+                if insight_data:
+                    # Validate and sanitize insight_data
+                    headline = insight_data.get("headline", "")
+                    explanation = insight_data.get("explanation", "")
+                    confidence = insight_data.get("confidence", 85)
+                    category = insight_data.get("category", "spike")
+                    suggested_actions = insight_data.get("suggestedActions", [])
+                    
+                    # Ensure confidence is valid
+                    if not isinstance(confidence, (int, float)) or confidence < 0 or confidence > 100:
+                        confidence = 85
+                    
+                    # Ensure category is valid
+                    valid_categories = ["spike", "drop", "anomaly", "trend", "correlation", "opportunity"]
+                    if category not in valid_categories:
+                        category = "spike"
+                    
+                    # Ensure suggestedActions is a list
+                    if not isinstance(suggested_actions, list):
+                        suggested_actions = []
+                    
+                    # Validate each action
+                    validated_actions = []
+                    for action in suggested_actions[:3]:  # Limit to 3 actions
+                        if isinstance(action, dict) and "label" in action and "action" in action:
+                            validated_actions.append({
+                                "label": str(action.get("label", ""))[:100],  # Limit length
+                                "action": str(action.get("action", ""))[:200]
+                            })
+                    
+                    if not validated_actions:
+                        validated_actions = [
+                            {"label": "See Segment Breakdown", "action": f"Break down {spike_label} by segments"},
+                            {"label": "Compare with Last Week", "action": f"Compare {spike_label} with previous period"}
+                        ]
+                    
+                    insights.append({
+                        "id": f"spike-{max_idx}",
+                        "dataPointIndex": max_idx,
+                        "dataPointKey": spike_label,
+                        "headline": headline[:200] if headline else f"{spike_label} shows {((max_val/mean - 1) * 100):.1f}% spike",
+                        "explanation": explanation[:500] if explanation else f"This data point is significantly above the average.",
+                        "confidence": int(confidence),
+                        "category": category,
+                        "suggestedActions": validated_actions,
+                    })
+                else:
+                    # If JSON parsing failed, use fallback
+                    raise ValueError("Could not parse AI response as JSON")
+                    
+            except Exception as e:
+                # Log error but don't break the endpoint
+                print(f"Error generating AI insight (using fallback): {e}")
+                # Fallback insight - always provide something
+                insights.append({
+                    "id": f"spike-{max_idx}",
+                    "dataPointIndex": max_idx,
+                    "dataPointKey": spike_label,
+                    "headline": f"{spike_label} shows {((max_val/mean - 1) * 100):.1f}% spike above average",
+                    "explanation": f"This data point is {((max_val/mean - 1) * 100):.1f}% above the mean value of {mean:.1f}.",
+                    "confidence": 75,
+                    "category": "spike",
+                    "suggestedActions": [
+                        {"label": "See Segment Breakdown", "action": f"Break down {spike_label} by segments"},
+                        {"label": "Compare with Last Week", "action": f"Compare {spike_label} with previous period"}
+                    ],
+                })
+
+        # Detect drops
+        threshold = mean * 0.85  # 15% below mean
+        if min_val < threshold and min_idx != max_idx:
+            drop_data = chart_data[min_idx]
+            drop_label = drop_data.get('name') or drop_data.get('date') or f"Point {min_idx + 1}"
+            
+            insights.append({
+                "id": f"drop-{min_idx}",
+                "dataPointIndex": min_idx,
+                "dataPointKey": drop_label,
+                "headline": f"{drop_label} shows {((1 - min_val/mean) * 100):.1f}% drop below average",
+                "explanation": f"This data point is {((1 - min_val/mean) * 100):.1f}% below the mean value of {mean:.1f}. This may indicate an issue or opportunity.",
+                "confidence": 75,
+                "category": "drop",
+                "suggestedActions": [
+                    {"label": "Investigate Root Cause", "action": f"Analyze why {drop_label} dropped"},
+                    {"label": "Compare Segments", "action": f"Compare {drop_label} across different segments"}
+                ],
+            })
+
+        # For KPI cards (only 2 data points), always generate an insight if none found
+        # This ensures KPI cards always get insights even without spikes/drops
+        if chart_type == 'kpi' and len(insights) == 0:
+            try:
+                current_val = float(values[-1]) if values and len(values) > 0 else 0.0
+                previous_val = float(values[0]) if len(values) > 1 else current_val
+                # Calculate percentage change safely
+                if previous_val > 0:
+                    change_pct = ((current_val - previous_val) / previous_val) * 100
+                elif current_val > 0:
+                    change_pct = 100.0  # New metric appeared
+                else:
+                    change_pct = 0.0  # Both are zero
+                
+                current_label = chart_data[-1].get('name') if len(chart_data) > 0 else 'Current'
+                previous_label = chart_data[0].get('name') if len(chart_data) > 0 else 'Previous'
+                
+                # Generate AI insight for KPI trend
+                # Try to use GPT if available, otherwise use fallback
+                ai_response = None
+                try:
+                    system_prompt = (
+                        f"You are a {persona} for a hospitality analytics platform.\n"
+                        "Analyze KPI metric data and generate a concise micro-insight (< 100 words).\n"
+                        "Return JSON: {\"headline\": \"...\", \"explanation\": \"...\", \"confidence\": 0-100, \"category\": \"spike|drop|anomaly|trend|correlation|opportunity\", \"suggestedActions\": [{\"label\": \"...\", \"action\": \"...\"}]}"
+                    )
+                    
+                    user_prompt = (
+                        f"KPI Metric Analysis:\n"
+                        f"Previous Value: {previous_label} = {previous_val:.1f}\n"
+                        f"Current Value: {current_label} = {current_val:.1f}\n"
+                        f"Change: {change_pct:+.1f}%\n\n"
+                        f"Generate a micro-insight explaining this metric trend. Include 1-2 suggested actions."
+                    )
+                    
+                    ai_response = call_azure_gpt([
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ])
+                except HTTPException as http_err:
+                    # Azure OpenAI not configured or failed - use fallback
+                    print(f"Azure OpenAI not available for KPI insights: {http_err.detail}")
+                    ai_response = None
+                except Exception as gpt_err:
+                    # Other GPT errors - use fallback
+                    print(f"GPT error for KPI insights: {gpt_err}")
+                    ai_response = None
+                
+                # Robust JSON extraction and parsing (only if AI response available)
+                insight_data = None
+                if ai_response:
+                    import re
+                    
+                    json_patterns = [
+                        r"```(?:json)?\s*(\{[\s\S]*?\})\s*```",
+                        r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})",
+                        r"(\{[\s\S]*?\})",
+                    ]
+                    
+                    for pattern in json_patterns:
+                        json_match = re.search(pattern, ai_response)
+                        if json_match:
+                            json_str = json_match.group(1)
+                            try:
+                                insight_data = json.loads(json_str)
+                                break
+                            except json.JSONDecodeError:
+                                try:
+                                    json_str = re.sub(r',\s*}', '}', json_str)
+                                    json_str = re.sub(r',\s*]', ']', json_str)
+                                    insight_data = json.loads(json_str)
+                                    break
+                                except json.JSONDecodeError:
+                                    continue
+                
+                if insight_data:
+                    headline = insight_data.get("headline", "")
+                    explanation = insight_data.get("explanation", "")
+                    confidence = insight_data.get("confidence", 85)
+                    category = insight_data.get("category", "trend")
+                    suggested_actions = insight_data.get("suggestedActions", [])
+                    
+                    if not isinstance(confidence, (int, float)) or confidence < 0 or confidence > 100:
+                        confidence = 85
+                    
+                    valid_categories = ["spike", "drop", "anomaly", "trend", "correlation", "opportunity"]
+                    if category not in valid_categories:
+                        category = "trend"
+                    
+                    if not isinstance(suggested_actions, list):
+                        suggested_actions = []
+                    
+                    validated_actions = []
+                    for action in suggested_actions[:3]:
+                        if isinstance(action, dict) and "label" in action and "action" in action:
+                            validated_actions.append({
+                                "label": str(action.get("label", ""))[:100],
+                                "action": str(action.get("action", ""))[:200]
+                            })
+                    
+                    if not validated_actions:
+                        validated_actions = [
+                            {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                            {"label": "Compare Segments", "action": "Compare across different segments"}
+                        ]
+                    
+                    insights.append({
+                        "id": f"kpi-trend-{len(chart_data)}",
+                        "dataPointIndex": len(chart_data) - 1,
+                        "dataPointKey": current_label,
+                        "headline": headline[:200] if headline else f"Metric changed by {change_pct:+.1f}%",
+                        "explanation": explanation[:500] if explanation else f"The metric changed from {previous_val:.1f} to {current_val:.1f} ({change_pct:+.1f}%).",
+                        "confidence": int(confidence),
+                        "category": category,
+                        "suggestedActions": validated_actions,
+                    })
+                # Always generate fallback insight if AI didn't work
+                if not insight_data:
+                    # Generate intelligent fallback based on the metric data
+                    trend_verb = "increased" if change_pct > 5 else "decreased" if change_pct < -5 else "remained stable"
+                    trend_desc = ""
+                    if abs(change_pct) > 10:
+                        trend_desc = f"significant {trend_verb.lower()}"
+                    elif abs(change_pct) > 5:
+                        trend_desc = f"moderate {trend_verb.lower()}"
+                    else:
+                        trend_desc = "minimal change"
+                    
+                    # Generate contextual headline and explanation
+                    # Note: We don't have access to 'label' here, so use generic terms
+                    if change_pct > 10:
+                        headline = f"Strong performance increase"
+                        explanation = f"This metric {trend_verb} by {abs(change_pct):.1f}% from {previous_val:.1f} to {current_val:.1f}. This {trend_desc} suggests positive performance trends."
+                    elif change_pct < -10:
+                        headline = f"Notable performance decrease"
+                        explanation = f"This metric {trend_verb} by {abs(change_pct):.1f}% from {previous_val:.1f} to {current_val:.1f}. This {trend_desc} may require attention."
+                    else:
+                        headline = f"Stable performance"
+                        explanation = f"This metric {trend_verb} by {abs(change_pct):.1f}% from {previous_val:.1f} to {current_val:.1f}. Performance is relatively stable."
+                    
+                    insights.append({
+                        "id": f"kpi-fallback-{len(chart_data)}",
+                        "dataPointIndex": len(chart_data) - 1,
+                        "dataPointKey": current_label,
+                        "headline": headline,
+                        "explanation": explanation,
+                        "confidence": 75,
+                        "category": "trend",
+                        "suggestedActions": [
+                            {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                            {"label": "Compare Segments", "action": "Compare across different segments"}
+                        ],
+                    })
+            except Exception as e:
+                # Fallback insight if AI fails - always provide something
+                print(f"Error generating KPI insight (using fallback): {e}")
+                current_val = float(values[-1]) if values and len(values) > 0 else 0.0
+                previous_val = float(values[0]) if len(values) > 1 else current_val
+                # Calculate percentage change safely
+                if previous_val > 0:
+                    change_pct = ((current_val - previous_val) / previous_val) * 100
+                elif current_val > 0:
+                    change_pct = 100.0  # New metric appeared
+                else:
+                    change_pct = 0.0  # Both are zero
+                
+                trend_type = "increased" if change_pct > 0 else "decreased" if change_pct < 0 else "remained stable"
+                current_label = chart_data[-1].get('name') if len(chart_data) > 0 else 'Current'
+                
+                insights.append({
+                    "id": f"kpi-error-fallback-{len(chart_data)}",
+                    "dataPointIndex": len(chart_data) - 1 if len(chart_data) > 0 else 0,
+                    "dataPointKey": current_label,
+                    "headline": f"Metric {trend_type}",
+                    "explanation": f"The metric {trend_type} from {previous_val:.1f} to {current_val:.1f} ({change_pct:+.1f}%).",
+                    "confidence": 70,
+                    "category": "trend",
+                    "suggestedActions": [
+                        {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                        {"label": "Compare Segments", "action": "Compare across different segments"}
+                    ],
+                })
+
+        # Ensure we always return at least one insight for KPI cards
+        if chart_type == 'kpi' and len(insights) == 0:
+            # Last resort fallback - extract values for basic insight
+            try:
+                fallback_values = []
+                for item in chart_data:
+                    val = item.get('value') or item.get('y') or item.get('count') or 0
+                    if isinstance(val, (int, float)):
+                        fallback_values.append(float(val))
+                
+                if len(fallback_values) >= 2:
+                    current_val = fallback_values[-1]
+                    previous_val = fallback_values[0]
+                    change_pct = ((current_val - previous_val) / previous_val * 100) if previous_val > 0 else 0
+                    trend_type = "increased" if change_pct > 0 else "decreased" if change_pct < 0 else "remained stable"
+                    
+                    insights.append({
+                        "id": "kpi-ultimate-fallback",
+                        "dataPointIndex": len(chart_data) - 1,
+                        "dataPointKey": chart_data[-1].get('name') if chart_data else 'Current',
+                        "headline": f"Metric {trend_type}",
+                        "explanation": f"The metric {trend_type} from {previous_val:.1f} to {current_val:.1f} ({change_pct:+.1f}%).",
+                        "confidence": 70,
+                        "category": "trend",
+                        "suggestedActions": [
+                            {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                            {"label": "Compare Segments", "action": "Compare across different segments"}
+                        ],
+                    })
+                else:
+                    # Generic fallback if we can't extract values
+                    insights.append({
+                        "id": "kpi-ultimate-fallback",
+                        "dataPointIndex": 0,
+                        "dataPointKey": "Current",
+                        "headline": "Metric analysis available",
+                        "explanation": "Analyzing metric performance and trends.",
+                        "confidence": 70,
+                        "category": "trend",
+                        "suggestedActions": [
+                            {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                            {"label": "Compare Segments", "action": "Compare across different segments"}
+                        ],
+                    })
+            except Exception as fallback_err:
+                print(f"Error in ultimate fallback: {fallback_err}")
+                # Absolute last resort
+                insights.append({
+                    "id": "kpi-absolute-fallback",
+                    "dataPointIndex": 0,
+                    "dataPointKey": "Current",
+                    "headline": "Metric analysis available",
+                    "explanation": "Analyzing metric performance and trends.",
+                    "confidence": 70,
+                    "category": "trend",
+                    "suggestedActions": [
+                        {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                        {"label": "Compare Segments", "action": "Compare across different segments"}
+                    ],
+                })
+
+        result_insights = insights[:max_insights] if insights else []
+        print(f"DEBUG: Returning {len(result_insights)} insights for chart_type={chart_type}")
+        
+        return {
+            "insights": result_insights,
+        }
+
+    except Exception as exc:
+        # Log error but return fallback insights instead of breaking
+        print(f"Chart insights endpoint error: {exc}")
+        import traceback
+        traceback.print_exc()
+        
+        # For KPI cards, always return a fallback insight
+        # Use try-except to safely access variables that might not be defined
+        try:
+            chart_type_safe = chart_type if 'chart_type' in locals() else request.chart_type if hasattr(request, 'chart_type') else None
+            chart_data_safe = chart_data if 'chart_data' in locals() else request.chart_data if hasattr(request, 'chart_data') else []
+            
+            if chart_type_safe == 'kpi' and chart_data_safe:
+                # Try to extract values for fallback
+                values = []
+                for item in chart_data_safe:
+                    val = item.get('value') or item.get('y') or item.get('count') or 0
+                    if isinstance(val, (int, float)):
+                        values.append(float(val))
+                
+                if len(values) >= 2:
+                    current_val = values[-1]
+                    previous_val = values[0]
+                    change_pct = ((current_val - previous_val) / previous_val * 100) if previous_val > 0 else 0
+                    trend_type = "increased" if change_pct > 0 else "decreased" if change_pct < 0 else "remained stable"
+                    
+                    return {
+                        "insights": [{
+                            "id": "kpi-error-fallback",
+                            "dataPointIndex": len(chart_data_safe) - 1,
+                            "dataPointKey": chart_data_safe[-1].get('name') if chart_data_safe else 'Current',
+                            "headline": f"Metric {trend_type}",
+                            "explanation": f"The metric {trend_type} from {previous_val:.1f} to {current_val:.1f} ({change_pct:+.1f}%).",
+                            "confidence": 70,
+                            "category": "trend",
+                            "suggestedActions": [
+                                {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                                {"label": "Compare Segments", "action": "Compare across different segments"}
+                            ],
+                        }],
+                    }
+                elif len(values) == 1:
+                    # Single value fallback
+                    return {
+                        "insights": [{
+                            "id": "kpi-single-value-fallback",
+                            "dataPointIndex": 0,
+                            "dataPointKey": chart_data_safe[0].get('name') if chart_data_safe else 'Current',
+                            "headline": "Metric value available",
+                            "explanation": f"Current metric value is {values[0]:.1f}.",
+                            "confidence": 70,
+                            "category": "trend",
+                            "suggestedActions": [
+                                {"label": "See Detailed Breakdown", "action": "Analyze this metric in detail"},
+                                {"label": "Compare Segments", "action": "Compare across different segments"}
+                            ],
+                        }],
+                    }
+        except Exception as fallback_err:
+            print(f"Error in exception handler fallback: {fallback_err}")
+        
+        return {
+            "insights": [],
+        }
+
+
+class AdaptiveSuggestionsRequest(BaseModel):
+    """Request for adaptive suggestions based on current state."""
+    current_view_config: Optional[Dict[str, Any]] = None
+    chart_data: Optional[List[Dict[str, Any]]] = []
+    selected_data_point: Optional[Dict[str, Any]] = None
+    base_suggestions: Optional[List[Dict[str, Any]]] = []
+
+
+@app.post("/api/ai/adaptive-suggestions")
+async def generate_adaptive_suggestions(request: AdaptiveSuggestionsRequest) -> Dict[str, Any]:
+    """
+    Generate adaptive suggestions that change based on user interactions.
+    Enhances heuristic suggestions with AI reasoning.
+    """
+    try:
+        current_config = request.current_view_config or {}
+        chart_data = request.chart_data or []
+        selected_point = request.selected_data_point
+        base_suggestions = request.base_suggestions or []
+
+        # Enhance suggestions with AI
+        system_prompt = (
+            "You are a suggestion engine for an analytics platform.\n"
+            "Review the current view, chart data, and base suggestions.\n"
+            "Enhance or add 2-3 more relevant suggestions based on the current context.\n"
+            "Return JSON array: [{\"id\": \"...\", \"label\": \"...\", \"action\": \"...\", \"reasoning\": \"...\", \"priority\": \"high|medium|low\", \"category\": \"...\"}]"
+        )
+
+        user_prompt = (
+            f"Current View: {json.dumps(current_config, default=str)}\n"
+            f"Chart Data Sample: {json.dumps(chart_data[:5], default=str)}\n"
+            f"Selected Point: {json.dumps(selected_point, default=str) if selected_point else 'None'}\n"
+            f"Base Suggestions: {json.dumps(base_suggestions, default=str)}\n\n"
+            "Generate 2-3 additional context-aware suggestions."
+        )
+
+        try:
+            ai_response = call_azure_gpt([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+
+            import re
+            json_match = re.search(r"\[[\s\S]*\]", ai_response)
+            if json_match:
+                ai_suggestions = json.loads(json_match.group(0))
+                if isinstance(ai_suggestions, list):
+                    # Merge with base suggestions
+                    all_suggestions = base_suggestions + ai_suggestions
+                    # Deduplicate by action
+                    seen = set()
+                    unique = []
+                    for s in all_suggestions:
+                        action = s.get('action', '')
+                        if action and action not in seen:
+                            seen.add(action)
+                            unique.append(s)
+                    return {"suggestions": unique[:5]}
+        except Exception as e:
+            print(f"AI enhancement error: {e}")
+
+        # Fallback to base suggestions
+        return {"suggestions": base_suggestions[:5]}
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Adaptive suggestions error: {str(exc)}")
+
+
+@app.post("/api/ai/suggestions")
+async def generate_suggestions(request: SuggestionRequest) -> Dict[str, Any]:
+    """
+    Generate context-aware suggestions based on current view config and session history.
+    Returns structured suggestions with action scores.
+    """
+    try:
+        current_config = request.current_view_config or {}
+        session_history = request.session_history or []
+        
+        # Determine analysis type
+        analysis_type = current_config.get('analysis_type')
+        funnel_def = current_config.get('funnel_definition', {})
+        segmentation_state = current_config.get('segmentation_state', {})
+        
+        suggestions = []
+        
+        # Generate suggestions based on analysis type
+        if analysis_type == 'funnel':
+            steps = funnel_def.get('steps', [])
+            group_by = funnel_def.get('group_by')
+            segments = funnel_def.get('segments', [])
+            
+            # Compare suggestions
+            if not group_by and len(steps) > 0:
+                suggestions.append({
+                    "id": "compare-device",
+                    "type": "compare",
+                    "title": "Compare by Device Type",
+                    "description": "See how mobile vs desktop users convert differently",
+                    "action_score": 75,
+                    "suggested_action": "Group this funnel by device type",
+                })
+                
+                suggestions.append({
+                    "id": "compare-traffic",
+                    "type": "compare",
+                    "title": "Compare Traffic Sources",
+                    "description": "Identify which marketing channels drive the best conversions",
+                    "action_score": 70,
+                    "suggested_action": "Group this funnel by traffic source",
+                })
+            
+            # Drill-down suggestions
+            if len(steps) > 3:
+                mid_idx = len(steps) // 2
+                mid_step = steps[mid_idx] if mid_idx < len(steps) else None
+                if mid_step:
+                    step_label = mid_step.get('label', 'Middle Step')
+                    suggestions.append({
+                        "id": "drill-mid-step",
+                        "type": "drill",
+                        "title": f"Analyze {step_label}",
+                        "description": "Deep dive into what happens at this step",
+                        "action_score": 65,
+                        "suggested_action": f"Show detailed analysis for {step_label}",
+                    })
+            
+            # Segment suggestions
+            if not segments or len(segments) == 0:
+                suggestions.append({
+                    "id": "segment-mobile",
+                    "type": "segment",
+                    "title": "Segment Mobile Users",
+                    "description": "Create a segment for mobile users to compare conversion rates",
+                    "action_score": 60,
+                    "suggested_action": "Add a segment for mobile device users",
+                })
+        
+        elif analysis_type == 'segmentation':
+            mode = segmentation_state.get('mode')
+            group_by = segmentation_state.get('group_by')
+            
+            # Compare suggestions
+            if mode == 'event' and not group_by:
+                suggestions.append({
+                    "id": "compare-device-seg",
+                    "type": "compare",
+                    "title": "Breakdown by Device",
+                    "description": "See how events vary across device types",
+                    "action_score": 70,
+                    "suggested_action": "Group events by device type",
+                })
+            
+            # Forecast suggestions
+            if mode in ['behavioral', 'guest']:
+                suggestions.append({
+                    "id": "forecast-conversion",
+                    "type": "forecast",
+                    "title": "Project Next Week",
+                    "description": "Forecast conversion rates for the next 7 days",
+                    "action_score": 55,
+                    "suggested_action": "Show forecast for next week",
+                })
+        
+        # Use AI to enhance suggestions if Azure GPT is available
+        if azure_openai_client and len(suggestions) > 0:
+            try:
+                system_prompt = (
+                    "You are a suggestion engine for an analytics platform.\n"
+                    "Review the current view configuration and session history, then enhance or add suggestions.\n"
+                    "Return a JSON array of suggestions with: id, type, title, description, action_score (0-100), suggested_action.\n"
+                    "Types: compare, drill, segment, forecast, diagnose."
+                )
+                
+                user_prompt = (
+                    f"Current config: {json.dumps(current_config, default=str)}\n"
+                    f"Session history: {json.dumps(session_history, default=str)}\n"
+                    f"Current suggestions: {json.dumps(suggestions, default=str)}\n\n"
+                    "Enhance or add 2-3 more relevant suggestions. Return JSON array only."
+                )
+                
+                ai_response = call_azure_gpt([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ])
+                
+                # Try to parse AI suggestions
+                import re
+                json_match = re.search(r"\[[\s\S]*\]", ai_response)
+                if json_match:
+                    ai_suggestions = json.loads(json_match.group(0))
+                    if isinstance(ai_suggestions, list):
+                        suggestions.extend(ai_suggestions[:3])  # Add up to 3 AI suggestions
+            except Exception as e:
+                print(f"AI suggestion enhancement error: {e}")
+                # Continue with rule-based suggestions
+        
+        # Sort by action_score descending
+        suggestions.sort(key=lambda x: x.get('action_score', 0), reverse=True)
+        
+        return {
+            "suggestions": suggestions[:5],  # Return top 5
+        }
+        
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Suggestions error: {str(exc)}")
+
+
+@app.get("/api/ai/anomalies")
+async def get_recent_anomalies(limit: int = Query(default=10, ge=1, le=50)) -> Dict[str, Any]:
+    """
+    Returns cached anomalies from background anomaly detection task.
+    Anomalies are detected periodically (every 15 minutes) by a background task.
+    """
+    try:
+        from engines.autonomousAnalyst import get_recent_anomalies, get_last_check_timestamp
+        
+        anomalies = get_recent_anomalies(limit)
+        last_check = get_last_check_timestamp()
+        
+        return {
+            "anomalies": anomalies,
+            "last_check_timestamp": last_check.isoformat() if last_check else None,
+            "count": len(anomalies),
+        }
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="Autonomous analyst module not available"
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Anomalies endpoint error: {str(exc)}")
+
+
+async def background_anomaly_check():
+    """Background task to run anomaly detection periodically."""
+    try:
+        from engines.autonomousAnalyst import detect_anomalies
+        await detect_anomalies()
+    except Exception as e:
+        print(f"Background anomaly check error: {e}")
+
+
+# Start background task on app startup
+@app.on_event("startup")
+async def startup_event():
+    """Start background anomaly detection task."""
+    import asyncio
+    async def periodic_check():
+        while True:
+            await background_anomaly_check()
+            await asyncio.sleep(900)  # Run every 15 minutes
+    
+    # Start background task
+    asyncio.create_task(periodic_check())
 
 
 # -------------------------------

@@ -113,18 +113,28 @@ export function analyzeHospitalityTrends(
 }
 
 /**
- * Calculates intent score (0-100) based on funnel depth and engagement
+ * Calculates intent score (0-100) based on funnel depth and engagement.
+ * Currently uses rule-based scoring. Future: integrate ML model (scikit-learn) for improved accuracy.
+ * 
  * @param funnelDepth Number of steps completed (0 = just landed, 6 = completed booking)
  * @param maxSteps Total steps in funnel
  * @param timeOnSite Seconds spent on site
  * @param hasInteractions Whether user has meaningful interactions (clicks, scrolls)
+ * @param additionalFeatures Optional features for ML model: { priceViewed, nightsSelected, addonsViewed, etc. }
  * @returns Intent score 0-100
  */
 export function calculateIntentScore(
   funnelDepth: number,
   maxSteps: number,
   timeOnSite: number = 0,
-  hasInteractions: boolean = false
+  hasInteractions: boolean = false,
+  additionalFeatures?: {
+    priceViewed?: number;
+    nightsSelected?: number;
+    addonsViewed?: number;
+    formFieldsCompleted?: number;
+    [key: string]: any;
+  }
 ): number {
   // Base score from funnel depth (0-70 points)
   const depthScore = (funnelDepth / maxSteps) * 70;
@@ -139,7 +149,24 @@ export function calculateIntentScore(
   // Interaction bonus (0-10 points)
   const interactionScore = hasInteractions ? 10 : 0;
 
-  return Math.min(100, Math.round(depthScore + timeScore + interactionScore));
+  // Additional feature bonuses (for future ML integration)
+  let featureBonus = 0;
+  if (additionalFeatures) {
+    if (additionalFeatures.priceViewed && additionalFeatures.priceViewed > 0) featureBonus += 2;
+    if (additionalFeatures.nightsSelected && additionalFeatures.nightsSelected > 0) featureBonus += 2;
+    if (additionalFeatures.addonsViewed && additionalFeatures.addonsViewed > 0) featureBonus += 1;
+    if (additionalFeatures.formFieldsCompleted && additionalFeatures.formFieldsCompleted > 2) featureBonus += 2;
+  }
+
+  const baseScore = Math.min(100, Math.round(depthScore + timeScore + interactionScore + featureBonus));
+
+  // TODO: Future ML integration
+  // When ML model is available, call:
+  // return mlPredictIntentScore({
+  //   funnelDepth, maxSteps, timeOnSite, hasInteractions, ...additionalFeatures
+  // });
+
+  return baseScore;
 }
 
 /**

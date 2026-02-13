@@ -17,7 +17,8 @@ export const generateInsight = async (
   data: any,
   userQuery?: string,
   currentView?: ViewConfig | null,
-  sessionAnalyses?: ViewConfig[]
+  sessionAnalyses?: ViewConfig[],
+  conversationSummary?: string | null
 ): Promise<AiEngineResponse> => {
   try {
     const response = await fetch('http://localhost:8000/api/ai/insight', {
@@ -31,6 +32,7 @@ export const generateInsight = async (
         user_query: userQuery,
         current_view: currentView, // Send current screen state
         session_analyses: sessionAnalyses, // For "compare to last month" context
+        conversation_summary: conversationSummary, // Include conversation summary for context compression
       }),
     });
 

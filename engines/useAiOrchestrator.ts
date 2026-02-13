@@ -76,6 +76,9 @@ interface AiOrchestratorState {
 
   /** Initialize with default session if none exists */
   ensureDefaultSession: () => void;
+
+  /** Summarize conversation for context compression */
+  summarizeConversation: (sessionId: string) => Promise<string | null>;
 }
 
 export const useAiOrchestrator = create<AiOrchestratorState>((set, get) => ({
@@ -183,6 +186,55 @@ export const useAiOrchestrator = create<AiOrchestratorState>((set, get) => ({
     }
     if (!activeSessionId && sessions.length > 0) {
       set({ activeSessionId: sessions[0].id });
+    }
+  },
+
+  summarizeConversation: async (sessionId: string) => {
+    const { sessions } = get();
+    const session = sessions.find((s) => s.id === sessionId);
+    if (!session || session.messages.length < 5) {
+      return null; // Only summarize if there are 5+ messages
+    }
+
+    try {
+      // Use Azure GPT to generate summary
+      const response = await fetch('http://localhost:8000/api/ai/summarize-conversation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: session.messages.slice(-20), // Last 20 messages
+        }),
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      const summary = data.summary;
+
+      // Store summary in session metadata
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                metadata: {
+                  ...s.metadata,
+                  conversation_summary: summary,
+                  conversation_summary_timestamp: new Date().toISOString(),
+                },
+              }
+            : s
+        ),
+      }));
+
+      return summary;
+    } catch (error) {
+      console.error('Error summarizing conversation:', error);
+      return null;
     }
   },
 }));

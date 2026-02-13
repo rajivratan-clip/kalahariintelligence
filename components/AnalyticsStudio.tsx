@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus, Filter, ChevronDown, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus, Filter, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import FunnelLab from './FunnelLab';
 import RevenueImpactView from './RevenueImpactView';
 import HospitalityMetricsView from './HospitalityMetricsView';
+import AIInsightsView from './AIInsightsView';
 import SegmentationView from './SegmentationView';
 import DateFilter, { DateRange } from './DateFilter';
+import AutonomousFunnelBuilder from './AutonomousFunnelBuilder';
 import { FunnelDefinition, FunnelStepConfig, AnalyticsConfigUpdate, ViewConfig } from '../types';
 import { useAiOrchestrator } from '../engines/useAiOrchestrator';
 import { fetchFunnelData } from '../services/funnelService';
@@ -194,17 +196,11 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
   const [dateRange, setDateRange] = useState<DateRange | null>(null);
   const [kpiMetrics, setKpiMetrics] = useState<KPIMetric[]>([]);
   const [isLoadingKPIs, setIsLoadingKPIs] = useState(false);
+  const [showAutonomousBuilder, setShowAutonomousBuilder] = useState(false);
   
   // Funnel configuration - will be updated from FunnelLab
   const [funnelConfig, setFunnelConfig] = useState<FunnelDefinition>({
-    steps: [
-      { id: 'step-1', event_type: 'Page Viewed', filters: [], label: 'Landed', event_category: 'hospitality' },
-      { id: 'step-2', event_type: 'Location Select', filters: [], label: 'Location Select', event_category: 'hospitality' },
-      { id: 'step-3', event_type: 'Date Select', filters: [], label: 'Date Select', event_category: 'hospitality' },
-      { id: 'step-4', event_type: 'Room Select', filters: [], label: 'Room Select', event_category: 'hospitality' },
-      { id: 'step-5', event_type: 'Payment', filters: [], label: 'Payment', event_category: 'hospitality' },
-      { id: 'step-6', event_type: 'Confirmation', filters: [], label: 'Confirmation', event_category: 'hospitality' }
-    ],
+    steps: [],
     view_type: 'conversion',
     completed_within: 30,
     counting_by: 'unique_users',
@@ -376,6 +372,40 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
     }
   }, [activeSessionId, getActiveSession]);
 
+  // Save funnel config to session when switching away from funnel view
+  useEffect(() => {
+    const session = getActiveSession();
+    if (!session) return;
+    
+    // Only save if we're switching away from funnel (to preserve config)
+    if (analysisType !== 'funnel' && funnelConfig.steps.length > 0) {
+      // Update session's view config to preserve funnel state
+      const viewConfig: ViewConfig = {
+        id: session.currentViewConfig?.id || `funnel-${Date.now()}`,
+        analysis_type: 'funnel',
+        measurement: measurement as string,
+        funnel_definition: funnelConfig,
+        layout_template: 'SINGLE_CHART',
+      };
+      session.currentViewConfig = viewConfig;
+    }
+  }, [analysisType, funnelConfig, measurement, getActiveSession]);
+
+  // Restore funnel config when switching back to funnel view
+  useEffect(() => {
+    if (analysisType === 'funnel') {
+      const session = getActiveSession();
+      if (session?.currentViewConfig?.funnel_definition) {
+        const savedConfig = session.currentViewConfig.funnel_definition;
+        // Only restore if we have a saved config with steps
+        if (savedConfig.steps.length > 0) {
+          setFunnelConfig(savedConfig);
+          setInjectedFunnelConfig(savedConfig);
+        }
+      }
+    }
+  }, [analysisType, getActiveSession]);
+
   // Register applyConfig so AI guided build can update our state
   useEffect(() => {
     if (!applyConfigRef) return;
@@ -479,6 +509,7 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
   }, [applyConfigRef, funnelConfig, measurement, getActiveSession]);
 
   const [injectedFunnelSteps, setInjectedFunnelSteps] = useState<FunnelStepConfig[] | null>(null);
+  const [injectedFunnelConfig, setInjectedFunnelConfig] = useState<FunnelDefinition | null>(null);
   const [injectedSegmentMode, setInjectedSegmentMode] = useState<'event' | 'behavioral' | 'guest' | null>(null);
 
   // Load event schema
@@ -635,6 +666,21 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
             </div>
           )}
 
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2 border-t border-slate-200 pt-2 pb-2">
+            <button
+              onClick={() => setShowAutonomousBuilder(!showAutonomousBuilder)}
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                showAutonomousBuilder
+                  ? 'bg-brand-500 text-white'
+                  : 'bg-brand-50 text-brand-600 hover:bg-brand-100'
+              }`}
+            >
+              <Sparkles size={16} />
+              <span>Build with AI</span>
+            </button>
+          </div>
+
           {/* Analysis Type Tabs */}
           <div className="flex items-center gap-1 border-t border-slate-200 pt-1">
             <button
@@ -647,7 +693,7 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
             >
               <div className="flex items-center gap-2">
                 <BarChart3 size={16} />
-                <span>Overview</span>
+                <span>Funnel</span>
               </div>
               {analysisType === 'funnel' && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
@@ -708,23 +754,6 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
           {/* Filters Row */}
           <div className="flex items-center gap-3 py-3 border-t border-slate-200">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-slate-700">Measured as:</span>
-              <div className="relative">
-                <select
-                  value={measurement}
-                  onChange={(e) => setMeasurement(e.target.value as MeasurementType)}
-                  className="appearance-none pl-3 pr-8 py-1.5 text-sm font-medium bg-white border border-slate-300 rounded-lg text-slate-900 hover:border-[#0947A4] focus:border-[#0947A4] focus:ring-2 focus:ring-[#0947A4] focus:ring-opacity-20 cursor-pointer transition-colors"
-                >
-                  {availableMeasurements.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label} {option.isNew ? '⭐ NEW' : ''}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
               <DateFilter value={dateRange} onChange={setDateRange} />
             </div>
             <button className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
@@ -738,6 +767,60 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
       {/* Content Area */}
       <div className="flex-1 overflow-y-auto bg-slate-50">
         <div className="w-full px-6 py-6">
+          {/* Autonomous Builder */}
+          {showAutonomousBuilder && (
+            <div className="mb-6">
+              <AutonomousFunnelBuilder
+                onConfigBuilt={(config) => {
+                  // Map view_type to measurement (only map valid MeasurementType values)
+                  const viewTypeToMeasurement: Record<string, MeasurementType> = {
+                    'conversion': 'conversion',
+                    'overTime': 'over_time',
+                    'timeToConvert': 'time_to_convert',
+                    'frequency': 'frequency',
+                    // 'improvement' and 'significance' are not valid MeasurementType, map to 'conversion'
+                    'improvement': 'conversion',
+                    'significance': 'conversion',
+                  };
+                  const measurement: MeasurementType = viewTypeToMeasurement[config.view_type] || 'conversion';
+
+                  // Convert FunnelDefinition to AnalyticsConfigUpdate
+                  const configUpdate: AnalyticsConfigUpdate = {
+                    analysis_type: 'funnel',
+                    measurement: measurement,
+                    funnel_steps: config.steps.map((s) => ({
+                      id: s.id,
+                      label: s.label || s.event_type,
+                      event_type: s.event_type,
+                      event_category: s.event_category,
+                    })),
+                    funnel_view_type: config.view_type,
+                    funnel_completed_within: config.completed_within,
+                    funnel_counting_by: config.counting_by,
+                    funnel_group_by: config.group_by,
+                    funnel_segments: config.segments,
+                    funnel_global_filters: config.global_filters,
+                  };
+
+                  // Apply via existing ref
+                  if (applyConfigRef?.current) {
+                    applyConfigRef.current(configUpdate);
+                  }
+
+                  // Update local state
+                  setFunnelConfig(config);
+                  setAnalysisType('funnel');
+                  setMeasurement(measurement);
+                  
+                  // Set injected config for FunnelLab (includes all settings: steps, segments, view_type, etc.)
+                  setInjectedFunnelConfig(config);
+                  
+                  setShowAutonomousBuilder(false);
+                }}
+              />
+            </div>
+          )}
+
           {/* Main Content */}
           {analysisType === 'funnel' && (
             <>
@@ -751,15 +834,47 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
                 <HospitalityMetricsView config={funnelConfig} />
               )}
               
+              {/* AI Insights View */}
+              {measurement === 'ai_insights' && (
+                <AIInsightsView 
+                  config={funnelConfig}
+                  onExplain={onExplain}
+                />
+              )}
+              
               {/* Standard FunnelLab for all other measurements */}
-              {measurement !== 'revenue_impact' && measurement !== 'hospitality_metrics' && (
+              {measurement !== 'revenue_impact' && measurement !== 'hospitality_metrics' && measurement !== 'ai_insights' && (
                 <FunnelLab 
                   initialMeasurement={measurement as FunnelMeasurement}
                   isEmbedded={true}
                   onExplain={onExplain}
                   onExplainPayloadReady={(getter) => { explainPayloadGetterRef.current = getter; }}
                   injectedSteps={injectedFunnelSteps}
-                  onInjectedStepsConsumed={() => setInjectedFunnelSteps(null)}
+                  injectedConfig={injectedFunnelConfig || (funnelConfig.steps.length > 0 ? funnelConfig : null)}
+                  onInjectedStepsConsumed={() => {
+                    // Only clear if this was an AI-generated config (injectedFunnelConfig exists)
+                    // Don't clear for persisted configs (funnelConfig) to maintain state across view switches
+                    if (injectedFunnelConfig) {
+                      setInjectedFunnelSteps(null);
+                      setInjectedFunnelConfig(null);
+                    }
+                  }}
+                  onConfigChange={(newConfig) => {
+                    // Sync FunnelLab's internal config changes back to AnalyticsStudio
+                    setFunnelConfig(newConfig);
+                    // Also update session to persist changes
+                    const session = getActiveSession();
+                    if (session) {
+                      const viewConfig: ViewConfig = {
+                        id: session.currentViewConfig?.id || `funnel-${Date.now()}`,
+                        analysis_type: 'funnel',
+                        measurement: measurement as string,
+                        funnel_definition: newConfig,
+                        layout_template: 'SINGLE_CHART',
+                      };
+                      session.currentViewConfig = viewConfig;
+                    }
+                  }}
                 />
               )}
             </>

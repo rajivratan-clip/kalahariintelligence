@@ -263,7 +263,13 @@ export const fetchPriceSensitivity = async (config: FunnelDefinition): Promise<a
   }
 };
 
+// DISABLED: Cohort analysis returning errors and not currently used
 export const fetchCohortAnalysis = async (config: FunnelDefinition): Promise<any[]> => {
+  // Disabled - returning empty array to prevent errors
+  console.log('Cohort analysis disabled - not fetching');
+  return [];
+  
+  /* Original code - disabled
   try {
     const response = await fetch(`${API_BASE}/api/funnel/cohort-analysis`, {
       method: 'POST',
@@ -289,9 +295,16 @@ export const fetchCohortAnalysis = async (config: FunnelDefinition): Promise<any
     console.error('Error fetching cohort analysis:', error);
     return [];
   }
+  */
 };
 
+// DISABLED: Executive summary returning errors and not currently used
 export const fetchExecutiveSummary = async (location?: string, days: number = 30): Promise<any> => {
+  // Disabled - returning null to prevent errors
+  console.log('Executive summary disabled - not fetching');
+  return null;
+  
+  /* Original code - disabled
   try {
     const url = new URL(`${API_BASE}/api/funnel/executive-summary`);
     if (location) url.searchParams.append('location', location);
@@ -309,4 +322,5 @@ export const fetchExecutiveSummary = async (location?: string, days: number = 30
       location: location || "All Locations"
     };
   }
+  */
 };

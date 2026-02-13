@@ -37,3 +37,16 @@ __pycache__/
 env/
 venv/
 ai/
+
+resortiq---hospitality-intelligence/DATA_CONNECTION_EXPLAINED.md
+resortiq---hospitality-intelligence/CLICKHOUSE_CONNECTION_CHECK.md
+resortiq---hospitality-intelligence/AZURE_CLICKHOUSE_SETUP.md
+resortiq---hospitality-intelligence/AUTONOMOUS_BUILDER_GUIDE.md
+resortiq---hospitality-intelligence/INTEGRATE_AUTONOMOUS_BUILDER.md
+resortiq---hospitality-intelligence/INTEGRATION_COMPLETE.md
+resortiq---hospitality-intelligence/INTELLIGENCE_IN_UI_INTEGRATION.md
+resortiq---hospitality-intelligence/QUICK_INTEGRATION_GUIDE.md
+resortiq---hospitality-intelligence/QUICK_START_AUTONOMOUS_BUILDER.md
+resortiq---hospitality-intelligence/SECURITY_EXPLANATION.md
+resortiq---hospitality-intelligence/SEGMENTATION_DATA_REQUIREMENTS.md
+resortiq---hospitality-intelligence/TESTING_CHECKLIST.md

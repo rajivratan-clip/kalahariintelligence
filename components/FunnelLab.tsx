@@ -48,7 +48,10 @@ import {
   Share2
 } from 'lucide-react';
 import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFilter, SegmentComparison } from '../types';
-import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema, fetchPathAnalysis, fetchLatencyData, fetchAbnormalDropoffs, fetchPriceSensitivity, fetchCohortAnalysis, fetchExecutiveSummary } from '../services/funnelService';
+import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema, fetchPathAnalysis, fetchLatencyData, fetchAbnormalDropoffs, fetchPriceSensitivity } from '../services/funnelService';
+// Disabled: fetchCohortAnalysis, fetchExecutiveSummary - returning errors and not currently used
+// AI Insights - using new opt-in component
+import KPICardWithAIButton from './KPICardWithAIButton';
 
 interface FunnelLabProps {
   onExplain?: (title: string, data: any) => void;
@@ -56,7 +59,9 @@ interface FunnelLabProps {
   initialMeasurement?: string;  // Initial view type (from Analytics Studio)
   isEmbedded?: boolean;          // If true, hide header (Analytics Studio provides it)
   injectedSteps?: FunnelStepConfig[] | null;  // AI guided build: steps to apply
+  injectedConfig?: FunnelDefinition | null;  // AI autonomous build: full config to apply
   onInjectedStepsConsumed?: () => void;  // Call after applying
+  onConfigChange?: (config: FunnelDefinition) => void;  // Callback when config changes internally
 }
 
 // Event Library - Generic Behavioral Events
@@ -154,7 +159,7 @@ const SEGMENT_PROPERTIES = [
   }
 ];
 
-const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady, initialMeasurement, isEmbedded = false, injectedSteps, onInjectedStepsConsumed }) => {
+const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady, initialMeasurement, isEmbedded = false, injectedSteps, injectedConfig, onInjectedStepsConsumed, onConfigChange }) => {
   const [config, setConfig] = useState<FunnelDefinition>({
     steps: [],
     view_type: 'conversion',
@@ -343,7 +348,17 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   // Fetch funnel data when config or date range changes
   useEffect(() => {
     const loadData = async () => {
-      if (!dateRange) return; // Wait for date range to be initialized
+      if (!dateRange) {
+        setIsLoading(false);
+        return; // Wait for date range to be initialized
+      }
+      
+      // Don't fetch if no steps
+      if (config.steps.length === 0) {
+        setIsLoading(false);
+        setData([]);
+        return;
+      }
       
       setIsLoading(true);
       try {
@@ -359,17 +374,14 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
           }
         };
         
-        const days = dateRange ? Math.ceil((new Date(dateRange.endDate).getTime() - new Date(dateRange.startDate).getTime()) / (1000 * 60 * 60 * 24)) : 30;
-        
-        const [funnelData, timeSeriesData, pathData, latency, abnormal, price, cohort, executive] = await Promise.all([
+        // Disabled cohort analysis and executive summary - returning errors and not currently used
+        const [funnelData, timeSeriesData, pathData, latency, abnormal, price] = await Promise.all([
           fetchFunnelData(configWithDateRange),
           fetchOverTimeData(configWithDateRange),
           fetchPathAnalysis(configWithDateRange),
           fetchLatencyData(configWithDateRange),
           fetchAbnormalDropoffs(configWithDateRange),
-          fetchPriceSensitivity(configWithDateRange),
-          fetchCohortAnalysis(configWithDateRange),
-          fetchExecutiveSummary(undefined, days)
+          fetchPriceSensitivity(configWithDateRange)
         ]);
         setData(funnelData);
         setOverTimeData(timeSeriesData);
@@ -377,32 +389,37 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
         setLatencyData(latency);
         setAbnormalDropoffsData(abnormal);
         setPriceSensitivityData(price);
-        setCohortAnalysisData(cohort);
-        setExecutiveSummary(executive);
+        // Set empty defaults for disabled features
+        setCohortAnalysisData([]);
+        setExecutiveSummary(null);
         
         // Load friction data for each step
-        const frictionPromises = funnelData.map((step, idx) => 
-          fetchFrictionData(step.event_name || step.name || config.steps[idx]?.event_type || `step_${idx + 1}`).then(result => ({
-            stepId: step.id,
-            friction: result.friction_points || []
-          }))
-        );
-        const frictionResults = await Promise.all(frictionPromises);
-        const frictionMap: Record<string, FrictionPoint[]> = {};
-        frictionResults.forEach(({ stepId, friction }) => {
-          frictionMap[stepId] = friction;
-      });
-        setFrictionData(frictionMap);
+        if (funnelData.length > 0) {
+          const frictionPromises = funnelData.map((step, idx) => 
+            fetchFrictionData(step.event_name || step.name || config.steps[idx]?.event_type || `step_${idx + 1}`).then(result => ({
+              stepId: step.id,
+              friction: result.friction_points || []
+            })).catch(() => ({
+              stepId: step.id,
+              friction: []
+            }))
+          );
+          const frictionResults = await Promise.all(frictionPromises);
+          const frictionMap: Record<string, FrictionPoint[]> = {};
+          frictionResults.forEach(({ stepId, friction }) => {
+            frictionMap[stepId] = friction;
+          });
+          setFrictionData(frictionMap);
+        }
       } catch (error) {
         console.error('Error loading funnel data:', error);
+        setData([]);
       } finally {
         setIsLoading(false);
       }
     };
 
-    if (config.steps.length > 0 && dateRange) {
-      loadData();
-    }
+    loadData();
   }, [config, dateRange]);
 
   // Apply injected steps from AI guided build
@@ -412,6 +429,29 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
       onInjectedStepsConsumed?.();
     }
   }, [injectedSteps]);
+
+  // Apply injected config from AI autonomous build (full config including view_type, counting_by, etc.)
+  useEffect(() => {
+    if (injectedConfig) {
+      // Deep clone to ensure React detects the change
+      const configCopy: FunnelDefinition = {
+        ...injectedConfig,
+        steps: [...injectedConfig.steps],
+        segments: injectedConfig.segments ? [...injectedConfig.segments] : [],
+        global_filters: injectedConfig.global_filters ? { ...injectedConfig.global_filters } : {},
+      };
+      setConfig(configCopy);
+      // Update active tab based on view_type
+      if (injectedConfig.view_type === 'overTime') {
+        setActiveTab('overTime');
+      } else if (injectedConfig.view_type === 'timeToConvert') {
+        setActiveTab('timeToConvert');
+      } else {
+        setActiveTab('conversion');
+      }
+      onInjectedStepsConsumed?.();
+    }
+  }, [injectedConfig]);
 
   // Register explain payload for parent (Analytics Studio header "Ask AI")
   useEffect(() => {
@@ -468,10 +508,14 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
       event_type: category === 'custom' ? (customEventData?.base_event_type || eventType) : eventType,
       filters: category === 'custom' ? (customEventData?.filters || []) : []
     };
-         setConfig(prev => ({
-             ...prev,
-      steps: [...prev.steps, newStep]
-    }));
+    setConfig(prev => {
+      const newConfig = {
+        ...prev,
+        steps: [...prev.steps, newStep]
+      };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
     setShowAddStepModal(false);
   };
 
@@ -507,10 +551,14 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   };
 
   const handleRemoveStep = (id: string) => {
-    setConfig(prev => ({
-      ...prev,
-      steps: prev.steps.filter(s => s.id !== id)
-    }));
+    setConfig(prev => {
+      const newConfig = {
+        ...prev,
+        steps: prev.steps.filter(s => s.id !== id)
+      };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
   };
 
   const handleUpdateStepFilters = (stepId: string, filters: Record<string, any>) => {
@@ -523,7 +571,11 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   };
 
   const handleUpdateViewType = (viewType: 'conversion' | 'overTime' | 'timeToConvert' | 'frequency' | 'improvement' | 'significance') => {
-    setConfig(prev => ({ ...prev, view_type: viewType }));
+    setConfig(prev => {
+      const newConfig = { ...prev, view_type: viewType };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
     // Auto-switch to Over Time tab when view_type is overTime
     if (viewType === 'overTime') {
       setActiveTab('overTime');
@@ -535,11 +587,19 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   };
 
   const handleUpdateCompletedWithin = (days: number) => {
-    setConfig(prev => ({ ...prev, completed_within: days }));
+    setConfig(prev => {
+      const newConfig = { ...prev, completed_within: days };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
   };
 
   const handleUpdateCountingBy = (countingBy: 'unique_users' | 'sessions' | 'events') => {
-    setConfig(prev => ({ ...prev, counting_by: countingBy }));
+    setConfig(prev => {
+      const newConfig = { ...prev, counting_by: countingBy };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
   };
 
   // Legacy support
@@ -563,7 +623,11 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   };
 
   const handleUpdateGroupBy = (group_by: 'device_type' | 'guest_segment' | 'traffic_source' | null) => {
-    setConfig(prev => ({ ...prev, group_by }));
+    setConfig(prev => {
+      const newConfig = { ...prev, group_by };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
   };
 
   // Segment Comparison Handlers
@@ -573,19 +637,27 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
       name: `Segment ${(config.segments?.length || 0) + 1}`,
       filters: []
     };
-    setConfig(prev => ({
-      ...prev,
-      segments: [...(prev.segments || []), newSegment]
-    }));
+    setConfig(prev => {
+      const newConfig = {
+        ...prev,
+        segments: [...(prev.segments || []), newSegment]
+      };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
     // Auto-open editing mode for the new segment
     setTimeout(() => setEditingSegmentId(newSegment.id), 100);
   };
 
   const handleRemoveSegment = (segmentId: string) => {
-    setConfig(prev => ({
-      ...prev,
-      segments: (prev.segments || []).filter(s => s.id !== segmentId)
-    }));
+    setConfig(prev => {
+      const newConfig = {
+        ...prev,
+        segments: (prev.segments || []).filter(s => s.id !== segmentId)
+      };
+      onConfigChange?.(newConfig);
+      return newConfig;
+    });
     if (editingSegmentId === segmentId) {
       setEditingSegmentId(null);
     }
@@ -641,7 +713,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
             {d.revenueAtRisk > 0 && (
               <div className="flex justify-between items-center text-orange-300 border-t border-slate-700 pt-1.5 mt-1.5">
                 <span>Revenue at Risk:</span>
-                <span className="font-mono font-semibold">${(d.revenueAtRisk / 1000).toFixed(1)}k</span>
+                <span className="font-mono font-semibold text-red-600">${(d.revenueAtRisk / 1000).toFixed(1)}k</span>
               </div>
             )}
             {friction.length > 0 && (
@@ -840,15 +912,15 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                     
                     {/* Segment Filter - Only ONE filter per segment */}
                     {segment.filters && segment.filters.length > 0 ? (
-                      <div className="flex items-center justify-between p-2 bg-purple-50 border border-purple-200 rounded">
+                      <div className="flex items-center justify-between p-2 bg-brand-50 border border-brand-200 rounded">
                         <div className="flex items-center gap-2 text-xs">
-                          <span className="font-medium text-purple-900">{segment.filters[0].property}</span>
-                          <span className="text-purple-400">=</span>
-                          <span className="font-mono text-purple-700">{String(segment.filters[0].value)}</span>
+                          <span className="font-medium text-brand-700">{segment.filters[0].property}</span>
+                          <span className="text-brand-500">=</span>
+                          <span className="font-mono text-brand-700">{String(segment.filters[0].value)}</span>
                 </div>
                         <button
                           onClick={() => handleRemoveSegmentFilter(segment.id, 0)}
-                          className="text-purple-500 hover:text-purple-700"
+                          className="text-brand-500 hover:text-brand-700"
                           title="Remove filter"
                         >
                           <X size={12} />
@@ -870,7 +942,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                       ) : (
                         <button
                           onClick={() => setEditingSegmentId(segment.id)}
-                          className="w-full text-[10px] px-2 py-1 bg-purple-50 text-purple-600 rounded hover:bg-purple-100 flex items-center justify-center gap-1 font-medium"
+                          className="w-full text-[10px] px-2 py-1 bg-brand-50 text-brand-600 rounded hover:bg-brand-100 flex items-center justify-center gap-1 font-medium"
                           disabled={isLoadingSegmentValues}
                         >
                           <Plus size={10} /> {isLoadingSegmentValues ? 'Loading...' : 'Set Filter'}
@@ -885,7 +957,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
             {/* Add Segment Button */}
             <button
               onClick={handleAddSegment}
-              className="w-full py-2 border-2 border-dashed border-purple-300 rounded-lg text-xs text-purple-600 hover:text-purple-700 hover:border-purple-400 flex items-center justify-center gap-1 transition-all"
+              className="w-full py-2 border-2 border-dashed border-brand-400 rounded-lg text-xs text-brand-600 hover:text-brand-700 hover:border-brand-500 flex items-center justify-center gap-1 transition-all"
             >
               <Plus size={14} /> Add Segment
             </button>
@@ -1134,80 +1206,77 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
             /* Aggregate Metrics (when no segments) */
             <div className="grid grid-cols-4 gap-4">
                 {/* Total Conversion */}
-                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#10b98115' }}>
-                          <Target size={20} style={{ color: '#10b981' }} />
-                        </div>
-                        <span className="text-sm font-medium text-slate-600">Total Conversion</span>
-                      </div>
-                    </div>
-                    <div className="text-2xl font-bold text-slate-900 mb-1">{totalConversion}%</div>
-                    <div className="text-xs text-green-600 flex items-center gap-1 mt-2">
-                      <TrendingUp size={12} /> +2.4% vs last {config.window}
-                    </div>
-                </div>
+                <KPICardWithAIButton
+                  label="Total Conversion"
+                  value={`${totalConversion}%`}
+                  subtitle="+2.4% vs last"
+                  change={2.4}
+                  changeType="increase"
+                  icon={<Target size={20} />}
+                  color="#10b981"
+                  metricData={{
+                    current: parseFloat(totalConversion) || 0,
+                    previous: parseFloat(totalConversion) - 2.4 || 0,
+                    trend: 'up',
+                    context: 'Funnel Total Conversion',
+                  }}
+                  dataLoaded={!isLoading && data.length > 0}
+                />
                 
                 {/* Dropped Off */}
-                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#ef444415' }}>
-                          <TrendingDown size={20} style={{ color: '#ef4444' }} />
-                        </div>
-                        <span className="text-sm font-medium text-slate-600">Dropped Off</span>
-                      </div>
-                    </div>
-                    <div className="text-2xl font-bold text-slate-900 mb-1">{totalDropped.toLocaleString()}</div>
-                    <div className="text-xs text-slate-500 mb-2">Guests lost</div>
-                </div>
+                <KPICardWithAIButton
+                  label="Dropped Off"
+                  value={totalDropped.toLocaleString()}
+                  subtitle="Guests lost"
+                  icon={<TrendingDown size={20} />}
+                  color="#ef4444"
+                  metricData={{
+                    current: parseInt(totalDropped.replace(/,/g, '')) || 0,
+                    trend: 'down',
+                    context: 'Funnel Dropped Off',
+                  }}
+                  dataLoaded={!isLoading && data.length > 0}
+                />
                 
                 {/* Revenue at Risk */}
-                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#f59e0b15' }}>
-                          <DollarSign size={20} style={{ color: '#f59e0b' }} />
-                        </div>
-                        <span className="text-sm font-medium text-slate-600">Revenue at Risk</span>
-                      </div>
-                      {totalRevenueAtRisk > 10000 && (
-                        <span className="text-xs font-semibold px-2 py-1 rounded" style={{ 
-                          backgroundColor: '#ef444415', 
-                          color: '#ef4444' 
-                        }}>
-                          High Alert
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-2xl font-bold text-red-600 mb-1">${(totalRevenueAtRisk / 1000).toFixed(1)}k</div>
-                    <div className="text-xs text-red-500 mb-2 font-medium">High Alert</div>
-                </div>
+                <KPICardWithAIButton
+                  label="Revenue at Risk"
+                  value={`$${(totalRevenueAtRisk / 1000).toFixed(1)}k`}
+                  subtitle="High Alert"
+                  icon={<DollarSign size={20} />}
+                  color="#f59e0b"
+                  badge={totalRevenueAtRisk > 10000 ? 'High Alert' : undefined}
+                  metricData={{
+                    current: totalRevenueAtRisk,
+                    trend: totalRevenueAtRisk > 10000 ? 'up' : 'stable',
+                    context: 'Funnel Revenue at Risk',
+                  }}
+                  dataLoaded={!isLoading && data.length > 0}
+                />
                 
                 {/* Avg Time to Convert */}
-                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#3b82f615' }}>
-                          <Clock size={20} style={{ color: '#3b82f6' }} />
-                        </div>
-                        <span className="text-sm font-medium text-slate-600">Avg Time to Convert</span>
-                      </div>
-                    </div>
-                    <div className="text-2xl font-bold text-slate-900 mb-1">
-                      {(() => {
-                        // Use the LAST step's cumulative time (time from start to final conversion)
-                        const lastStep = latencyData[latencyData.length - 1];
-                        // Use best_time_seconds which falls back to P95 if median is 0
-                        const totalSeconds = lastStep?.best_time_seconds || lastStep?.median_time_seconds || lastStep?.p95_seconds || 0;
-                        const minutes = Math.floor(totalSeconds / 60);
-                        const seconds = Math.floor(totalSeconds % 60);
-                        return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
-                      })()}
-                    </div>
-                    <div className="text-xs text-slate-500 mb-2">Median duration</div>
-                </div>
+                <KPICardWithAIButton
+                  label="Avg Time to Convert"
+                  value={(() => {
+                    const lastStep = latencyData[latencyData.length - 1];
+                    const totalSeconds = lastStep?.best_time_seconds || lastStep?.median_time_seconds || lastStep?.p95_seconds || 0;
+                    const minutes = Math.floor(totalSeconds / 60);
+                    const seconds = Math.floor(totalSeconds % 60);
+                    return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
+                  })()}
+                  subtitle="Median duration"
+                  icon={<Clock size={20} />}
+                  color="#3b82f6"
+                  metricData={{
+                    current: (() => {
+                      const lastStep = latencyData[latencyData.length - 1];
+                      return lastStep?.best_time_seconds || lastStep?.median_time_seconds || lastStep?.p95_seconds || 0;
+                    })(),
+                    trend: 'stable',
+                    context: 'Funnel Avg Time to Convert',
+                  }}
+                  dataLoaded={!isLoading && data.length > 0}
+                />
             </div>
           )}
             </div>
@@ -1216,28 +1285,28 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
         <div className="flex-1 p-6 pt-0 overflow-y-auto">
           {/* Segment Comparison Banner */}
           {config.segments && config.segments.length > 0 && (
-            <div className="mb-4 p-3 bg-gradient-to-r from-purple-50 to-blue-50 border-l-4 border-purple-500 rounded-lg shadow-sm">
-              <div className="flex items-center justify-between">
+            <div className="mb-4 p-3 bg-gradient-to-r from-brand-50 to-blue-50 border-l-4 border-brand-500 rounded-lg shadow-sm">
+                  <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></div>
-                  <span className="text-sm font-semibold text-purple-900">
+                  <div className="w-2 h-2 bg-brand-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-semibold text-brand-700">
                     Comparing {config.segments.length} Segment{config.segments.length > 1 ? 's' : ''}
                   </span>
                 </div>
                 <button
                   onClick={() => setConfig(prev => ({ ...prev, segments: [] }))}
-                  className="text-xs px-2 py-1 bg-white border border-purple-300 rounded text-purple-700 hover:bg-purple-100 font-medium transition-colors"
+                  className="text-xs px-2 py-1 bg-white border border-brand-400 rounded text-brand-700 hover:bg-brand-50 font-medium transition-colors"
                 >
                   Clear All
                 </button>
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
                 {config.segments.map((segment, idx) => (
-                  <div key={segment.id} className="flex items-center gap-1 px-2 py-1 bg-white rounded border border-purple-200 text-xs">
+                  <div key={segment.id} className="flex items-center gap-1 px-2 py-1 bg-white rounded border border-brand-200 text-xs">
                     <div className="w-3 h-3 rounded-full" style={{ backgroundColor: `hsl(${idx * 60}, 70%, 50%)` }}></div>
-                    <span className="font-medium text-purple-900">{segment.name}</span>
+                    <span className="font-medium text-brand-700">{segment.name}</span>
                     {segment.filters.length > 0 && (
-                      <span className="text-purple-500">({segment.filters[0].property} = {String(segment.filters[0].value)})</span>
+                      <span className="text-brand-500">({segment.filters[0].property} = {String(segment.filters[0].value)})</span>
                     )}
                   </div>
                 ))}
@@ -1346,7 +1415,14 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                     
                     return (
                       <>
-                         <ResponsiveContainer width="100%" height="100%">
+                         {/* AI Insights temporarily disabled */}
+                         {/* <ChartWithInsights
+                          chartData={segmentChartData}
+                          chartType="bar"
+                          xAxisKey="name"
+                          insightsEnabled={true}
+                        > */}
+                          <ResponsiveContainer width="100%" height="100%">
                             <BarChart 
                             data={segmentChartData}
                             margin={{ top: 30, right: 40, left: 70, bottom: 100 }}
@@ -1392,7 +1468,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                               content={({ active, payload, label }) => {
                                 if (active && payload && payload.length > 0) {
                                   return (
-                                    <div className="bg-white border-2 border-purple-600 rounded-lg shadow-xl p-4">
+                                    <div className="bg-white border-2 border-brand-500 rounded-lg shadow-xl p-4">
                                       <p className="font-semibold text-slate-800 mb-3">{label}</p>
                                       <div className="space-y-2">
                                         {payload.map((entry, idx) => (
@@ -1401,7 +1477,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                                               <div className="w-4 h-4 rounded" style={{ backgroundColor: entry.color }}></div>
                                               <span className="text-slate-700 font-medium text-sm">{entry.name}</span>
                                             </div>
-                                            <span className="font-semibold text-purple-700">{entry.value}%</span>
+                                            <span className="font-semibold text-brand-700">{entry.value}%</span>
                                           </div>
                                         ))}
                                       </div>
@@ -1423,6 +1499,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                             ))}
                           </BarChart>
                         </ResponsiveContainer>
+                        {/* </ChartWithInsights> */}
                         
                         {/* Segment Legend */}
                         <div className="flex items-center justify-center gap-4 flex-wrap -mt-8 mb-6 text-sm">
@@ -1443,8 +1520,19 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                   // Default single-funnel view (no segments)
                   return (
                     <>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart 
+                      {/* AI Insights temporarily disabled */}
+                      {/* <ChartWithInsights
+                        chartData={data.map(step => ({
+                          name: step.name,
+                          value: step.conversionRate,
+                          visitors: step.visitors,
+                        }))}
+                        chartType="bar"
+                        xAxisKey="name"
+                        insightsEnabled={true}
+                      > */}
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart 
                           data={data.map((step, idx) => {
                             // Ensure conversionRate + dropOffRate = 100 for proper stacking
                             const convRate = step.conversionRate || 0;
@@ -1622,6 +1710,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                                 </Bar>
                             </BarChart>
                         </ResponsiveContainer>
+                        {/* </ChartWithInsights> */}
                         
                         {/* Legend */}
                         <div className="flex items-center justify-center gap-6 -mt-8 mb-6 text-sm">
@@ -1992,8 +2081,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                                 <td className="p-4 text-red-500 font-medium">
                                     {idx > 0 && `-${row.dropOffRate}%`}
                                 </td>
-                      <td className="p-4 text-red-600 font-medium">
-                        ${(row.revenueAtRisk / 1000).toFixed(1)}k
+                      <td className="p-4">
+                        <span className="text-red-600 font-semibold">${(row.revenueAtRisk / 1000).toFixed(1)}k</span>
                       </td>
                                 <td className="p-4">
                         {frictionData[row.id] && frictionData[row.id].length > 0 ? (
@@ -2083,7 +2172,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                     {/* Create New Custom Event Button */}
                     <button
                       onClick={() => setShowCustomEventBuilder(true)}
-                      className="p-4 border-2 border-dashed border-purple-300 rounded-lg hover:border-purple-400 hover:bg-purple-50 transition-all text-purple-600 font-medium flex items-center justify-center gap-2"
+                      className="p-4 border-2 border-dashed border-brand-400 rounded-lg hover:border-brand-500 hover:bg-brand-50 transition-all text-brand-600 font-medium flex items-center justify-center gap-2"
                     >
                       <Plus size={20} /> Create New Custom Event
                     </button>
@@ -2460,9 +2549,9 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
 
   if (isLoading) {
     return (
-      <div className="space-y-2 p-2 bg-purple-50 rounded border border-purple-200">
-        <div className="flex items-center justify-center py-2 text-xs text-purple-600">
-          <div className="animate-spin rounded-full h-4 w-4 border-2 border-purple-600 border-t-transparent mr-2"></div>
+      <div className="space-y-2 p-2 bg-brand-50 rounded border border-brand-200">
+        <div className="flex items-center justify-center py-2 text-xs text-brand-600">
+          <div className="animate-spin rounded-full h-4 w-4 border-2 border-brand-500 border-t-transparent mr-2"></div>
           Loading available values...
         </div>
       </div>
@@ -2480,8 +2569,8 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
   }
 
   return (
-    <div className="space-y-2 p-2 bg-purple-50 rounded border border-purple-200">
-      <div className="text-[10px] text-purple-700 font-medium mb-1">
+    <div className="space-y-2 p-2 bg-brand-50 rounded border border-brand-200">
+      <div className="text-[10px] text-brand-700 font-medium mb-1">
         💡 One filter per segment. Need more? Create another segment!
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -2492,7 +2581,7 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
             setSelectedProperty(e.target.value);
             setSelectedValue(''); // Reset value when property changes
           }}
-          className="text-xs bg-white border border-purple-300 rounded p-1.5 text-purple-900"
+          className="text-xs bg-white border border-brand-400 rounded p-1.5 text-brand-700"
         >
           <option value="">Select Property</option>
           {Object.keys(segmentValues).map((propKey) => (
@@ -2506,7 +2595,7 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
         <select
           value={selectedValue}
           onChange={(e) => setSelectedValue(e.target.value)}
-          className="text-xs bg-white border border-purple-300 rounded p-1.5 text-purple-900"
+          className="text-xs bg-white border border-brand-400 rounded p-1.5 text-brand-700"
           disabled={!selectedProperty}
         >
           <option value="">Select Value</option>
@@ -2524,7 +2613,7 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
       <button
         onClick={handleAdd}
         disabled={!selectedProperty || !selectedValue || !availableValues || availableValues.length === 0}
-        className="w-full text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+        className="w-full text-xs px-2 py-1 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
       >
         ✓ Set Filter
       </button>
@@ -2610,7 +2699,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
           value={templateName}
           onChange={(e) => setTemplateName(e.target.value)}
           placeholder="e.g., Add-on Viewed"
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
         />
       </div>
       
@@ -2625,7 +2714,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
               key={emoji}
               onClick={() => setIcon(emoji)}
               className={`text-2xl p-2 rounded-lg border-2 transition-all ${
-                icon === emoji ? 'border-purple-500 bg-purple-50' : 'border-slate-200 hover:border-purple-300'
+                icon === emoji ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-brand-400'
               }`}
             >
               {emoji}
@@ -2644,7 +2733,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="e.g., User viewed add-on options"
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
         />
       </div>
       
@@ -2656,7 +2745,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
         <select
           value={baseEvent}
           onChange={(e) => setBaseEvent(e.target.value)}
-          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
         >
           <option value="">Select a base event...</option>
           {genericEvents.map((event: any) => (
@@ -2683,10 +2772,10 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
         {filters.length > 0 && (
           <div className="mb-3 space-y-2">
             {filters.map((filter, index) => (
-              <div key={index} className="flex items-center gap-2 p-2 bg-purple-50 border border-purple-200 rounded-lg text-sm">
-                <span className="font-medium text-purple-900">{filter.property}</span>
-                <span className="text-purple-500">{filter.operator}</span>
-                <span className="text-purple-700">{filter.value}</span>
+              <div key={index} className="flex items-center gap-2 p-2 bg-brand-50 border border-brand-200 rounded-lg text-sm">
+                <span className="font-medium text-brand-700">{filter.property}</span>
+                <span className="text-brand-500">{filter.operator}</span>
+                <span className="text-brand-700">{filter.value}</span>
                 <button
                   onClick={() => handleRemoveFilter(index)}
                   className="ml-auto text-red-500 hover:text-red-700"
@@ -2735,7 +2824,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
           <button
             onClick={handleAddFilter}
             disabled={!selectedProperty || !filterValue}
-            className="w-full text-sm px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full text-sm px-3 py-1.5 bg-brand-500 text-white rounded hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             + Add Filter
           </button>
@@ -2753,7 +2842,7 @@ const CustomEventBuilderForm: React.FC<CustomEventBuilderFormProps> = ({ eventSc
         <button
           onClick={handleSave}
           disabled={!templateName || !baseEvent}
-          className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+          className="flex-1 px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
         >
           Save Template
         </button>
