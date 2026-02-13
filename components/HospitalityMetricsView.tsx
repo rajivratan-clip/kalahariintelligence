@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Hotel, TrendingUp, Users, Calendar, DollarSign, Star } from 'lucide-react';
 import { FunnelDefinition } from '../types';
+import DateFilter, { DateRange } from './DateFilter';
+import ChartTypeSelector, { ChartType } from './ChartTypeSelector';
+import ChartRenderer from './ChartRenderer';
 
 interface HospitalityMetricsViewProps {
   config: FunnelDefinition;
@@ -40,16 +42,40 @@ interface HospitalityData {
 const HospitalityMetricsView: React.FC<HospitalityMetricsViewProps> = ({ config }) => {
   const [data, setData] = useState<HospitalityData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [segmentChartType, setSegmentChartType] = useState<ChartType>('bar');
+  const [intentChartType, setIntentChartType] = useState<ChartType>('pie');
   const API_BASE = 'http://localhost:8000';
+
+  // Initialize with default date range (last 30 days)
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startDate = thirtyDaysAgo.toISOString().split('T')[0];
+    setDateRange({ startDate, endDate: today });
+  }, []);
 
   useEffect(() => {
     const fetchHospitalityData = async () => {
       setIsLoading(true);
       try {
+        const requestBody: any = {
+          ...config,
+        };
+        
+        // Add date range if available
+        if (dateRange) {
+          requestBody.date_range = {
+            start_date: dateRange.startDate,
+            end_date: dateRange.endDate,
+          };
+        }
+        
         const response = await fetch(`${API_BASE}/api/analytics/hospitality-metrics`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config)
+          body: JSON.stringify(requestBody)
         });
         
         if (response.ok) {
@@ -63,10 +89,10 @@ const HospitalityMetricsView: React.FC<HospitalityMetricsViewProps> = ({ config 
       }
     };
 
-    if (config.steps.length > 0) {
+    if (config.steps.length > 0 && dateRange) {
       fetchHospitalityData();
     }
-  }, [config]);
+  }, [config, dateRange]);
 
   if (isLoading) {
     return (
@@ -146,57 +172,68 @@ const HospitalityMetricsView: React.FC<HospitalityMetricsViewProps> = ({ config 
         </div>
       </div>
 
+      {/* Date Filter */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-slate-700">Date Range:</span>
+          <DateFilter value={dateRange} onChange={setDateRange} />
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Guest Segment Performance */}
         <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-            <Users size={20} className="text-purple-600" />
-            Guest Segment Performance
-          </h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={data.segment_performance}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="segment" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} tickFormatter={(value) => `${value}%`} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
-              />
-              <Legend wrapperStyle={{ fontSize: '12px' }} />
-              <Bar yAxisId="left" dataKey="conversions" fill="#8b5cf6" name="Conversions" radius={[8, 8, 0, 0]} />
-              <Bar yAxisId="right" dataKey="conversion_rate" fill="#ec4899" name="Conv. Rate %" radius={[8, 8, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <Users size={20} className="text-purple-600" />
+              Guest Segment Performance
+            </h3>
+            <ChartTypeSelector
+              value={segmentChartType}
+              onChange={setSegmentChartType}
+              availableTypes={['bar', 'line', 'area', 'pie']}
+            />
+          </div>
+          <ChartRenderer
+            data={data.segment_performance}
+            chartType={segmentChartType}
+            dataKeys={['conversions', 'conversion_rate']}
+            xAxisKey="segment"
+            colors={['#8b5cf6', '#ec4899']}
+            height={280}
+            xAxisLabel="Segment"
+            yAxisLabel="Value"
+            tooltipFormatter={(value: number, name: string) => [
+              name === 'conversion_rate' ? `${value.toFixed(1)}%` : value.toLocaleString(),
+              name === 'conversion_rate' ? 'Conv. Rate' : 'Conversions'
+            ]}
+          />
         </div>
 
         {/* Intent Distribution */}
         <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-            <TrendingUp size={20} className="text-green-600" />
-            Booking Intent Distribution
-          </h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie
-                data={intentChartData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={(entry) => `${entry.name}: ${entry.value}`}
-                outerRadius={100}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {intentChartData.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={INTENT_COLORS[index % INTENT_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip 
-                formatter={(value: number, name: string) => [value, 'Sessions']}
-                contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+              <TrendingUp size={20} className="text-green-600" />
+              Booking Intent Distribution
+            </h3>
+            <ChartTypeSelector
+              value={intentChartType}
+              onChange={setIntentChartType}
+              availableTypes={['pie', 'bar', 'line', 'area']}
+            />
+          </div>
+          <ChartRenderer
+            data={intentChartData}
+            chartType={intentChartType}
+            dataKeys={['value']}
+            xAxisKey="name"
+            colors={INTENT_COLORS}
+            height={280}
+            xAxisLabel="Intent Level"
+            yAxisLabel="Sessions"
+            tooltipFormatter={(value: number) => [value.toLocaleString(), 'Sessions']}
+          />
           <div className="text-xs text-slate-500 text-center mt-2">
             Non-converted sessions by intent level
           </div>

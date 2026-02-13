@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { DollarSign, TrendingDown, AlertTriangle, ArrowUpRight } from 'lucide-react';
 import { FunnelDefinition } from '../types';
+import DateFilter, { DateRange } from './DateFilter';
+import ChartTypeSelector, { ChartType } from './ChartTypeSelector';
+import ChartRenderer from './ChartRenderer';
 
 interface RevenueImpactViewProps {
   config: FunnelDefinition;
@@ -41,16 +43,39 @@ interface RevenueData {
 const RevenueImpactView: React.FC<RevenueImpactViewProps> = ({ config }) => {
   const [data, setData] = useState<RevenueData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [chartType, setChartType] = useState<ChartType>('bar');
   const API_BASE = 'http://localhost:8000';
+
+  // Initialize with default date range (last 30 days)
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startDate = thirtyDaysAgo.toISOString().split('T')[0];
+    setDateRange({ startDate, endDate: today });
+  }, []);
 
   useEffect(() => {
     const fetchRevenueData = async () => {
       setIsLoading(true);
       try {
+        const requestBody: any = {
+          ...config,
+        };
+        
+        // Add date range if available
+        if (dateRange) {
+          requestBody.date_range = {
+            start_date: dateRange.startDate,
+            end_date: dateRange.endDate,
+          };
+        }
+        
         const response = await fetch(`${API_BASE}/api/analytics/revenue-impact`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config)
+          body: JSON.stringify(requestBody)
         });
         
         if (response.ok) {
@@ -64,10 +89,10 @@ const RevenueImpactView: React.FC<RevenueImpactViewProps> = ({ config }) => {
       }
     };
 
-    if (config.steps.length > 0) {
+    if (config.steps.length > 0 && dateRange) {
       fetchRevenueData();
     }
-  }, [config]);
+  }, [config, dateRange]);
 
   if (isLoading) {
     return (
@@ -150,23 +175,29 @@ const RevenueImpactView: React.FC<RevenueImpactViewProps> = ({ config }) => {
 
       {/* Revenue Lost per Step Chart */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-900 mb-4">💰 Revenue Lost Per Step</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-            <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-            <YAxis tick={{ fontSize: 12 }} tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`} />
-            <Tooltip 
-              formatter={(value: number) => [`$${value.toFixed(2)}`, 'Revenue Lost']}
-              contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-slate-900">💰 Revenue Lost Per Step</h3>
+          <div className="flex items-center gap-3">
+            <DateFilter value={dateRange} onChange={setDateRange} />
+            <ChartTypeSelector
+              value={chartType}
+              onChange={setChartType}
+              availableTypes={['bar', 'line', 'area', 'pie', 'composed']}
             />
-            <Bar dataKey="revenue" radius={[8, 8, 0, 0]}>
-              {chartData.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
+          </div>
+        </div>
+        <ChartRenderer
+          data={chartData}
+          chartType={chartType}
+          dataKeys={['revenue']}
+          xAxisKey="name"
+          colors={COLORS}
+          height={300}
+          yAxisFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
+          tooltipFormatter={(value: number) => [`$${value.toFixed(2)}`, 'Revenue Lost']}
+          yAxisLabel="Revenue Lost"
+          xAxisLabel="Step"
+        />
       </div>
 
       {/* Segment Breakdown */}

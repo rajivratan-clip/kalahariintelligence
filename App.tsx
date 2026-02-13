@@ -150,7 +150,7 @@ const App = () => {
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden" style={{ fontFamily: 'Roboto, sans-serif' }}>
       {/* Left Sidebar - expand on hover when collapsed; collapse on selection or mouse leave */}
       <aside
-        className="h-screen flex flex-col flex-shrink-0 fixed left-0 top-0 z-20 transition-[width] duration-200 ease-in-out overflow-hidden"
+        className="h-screen flex flex-col flex-shrink-0 fixed left-0 top-0 z-30 transition-[width] duration-200 ease-in-out overflow-hidden"
         style={{
           backgroundColor: SIDEBAR_BG,
           width: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH,
@@ -243,10 +243,10 @@ const App = () => {
         </nav>
       </aside>
 
-      {/* Main Content - fixed margin so expanded sidebar overlays instead of resizing */}
+      {/* Main Content - dynamic margin based on sidebar state */}
       <div
-        className="flex-1 flex flex-col min-w-0"
-        style={{ marginLeft: SIDEBAR_COLLAPSED_WIDTH }}
+        className="flex-1 flex flex-col min-w-0 transition-[margin-left] duration-200 ease-in-out"
+        style={{ marginLeft: isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH }}
       >
         <header className="h-16 bg-white border-b border-slate-200 flex items-center px-6 justify-between flex-shrink-0 z-10 shadow-sm">
           <div className="flex items-center gap-4 flex-1">

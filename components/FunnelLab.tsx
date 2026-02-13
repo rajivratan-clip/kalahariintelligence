@@ -11,9 +11,11 @@ import {
   LineChart,
   Line,
   AreaChart,
-  Area,
-  Sparkline
+  Area
 } from 'recharts';
+import DateFilter, { DateRange } from './DateFilter';
+import ChartTypeSelector, { ChartType } from './ChartTypeSelector';
+import ChartRenderer from './ChartRenderer';
 import { 
   Plus, 
   X, 
@@ -45,7 +47,7 @@ import {
   Save,
   Share2
 } from 'lucide-react';
-import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFilter } from '../types';
+import { FunnelStep, FunnelDefinition, FunnelStepConfig, FrictionPoint, EventFilter, SegmentComparison } from '../types';
 import { fetchFunnelData, fetchFrictionData, fetchOverTimeData, fetchEventSchema, fetchPathAnalysis, fetchLatencyData, fetchAbnormalDropoffs, fetchPriceSensitivity, fetchCohortAnalysis, fetchExecutiveSummary } from '../services/funnelService';
 
 interface FunnelLabProps {
@@ -191,7 +193,19 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   const [segmentValues, setSegmentValues] = useState<any>(null);
   const [isLoadingSegmentValues, setIsLoadingSegmentValues] = useState(false);
   const [dynamicEvents, setDynamicEvents] = useState<Array<{event_type: string; label: string; count?: number}>>([]);
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [overTimeChartType, setOverTimeChartType] = useState<ChartType>('area');
+  const [conversionChartType, setConversionChartType] = useState<ChartType>('bar');
   const API_BASE = 'http://localhost:8000';
+
+  // Initialize with default date range (last 30 days)
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startDate = thirtyDaysAgo.toISOString().split('T')[0];
+    setDateRange({ startDate, endDate: today });
+  }, []);
 
   // Set initial measurement from Analytics Studio
   useEffect(() => {
@@ -326,20 +340,36 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
     }
   };
 
-  // Fetch funnel data when config changes
+  // Fetch funnel data when config or date range changes
   useEffect(() => {
     const loadData = async () => {
+      if (!dateRange) return; // Wait for date range to be initialized
+      
       setIsLoading(true);
       try {
+        // Update config with date range
+        const configWithDateRange = {
+          ...config,
+          global_filters: {
+            ...config.global_filters,
+            date_range: dateRange ? {
+              start: dateRange.startDate,
+              end: dateRange.endDate,
+            } : undefined,
+          }
+        };
+        
+        const days = dateRange ? Math.ceil((new Date(dateRange.endDate).getTime() - new Date(dateRange.startDate).getTime()) / (1000 * 60 * 60 * 24)) : 30;
+        
         const [funnelData, timeSeriesData, pathData, latency, abnormal, price, cohort, executive] = await Promise.all([
-          fetchFunnelData(config),
-          fetchOverTimeData(config),
-          fetchPathAnalysis(config),
-          fetchLatencyData(config),
-          fetchAbnormalDropoffs(config),
-          fetchPriceSensitivity(config),
-          fetchCohortAnalysis(config),
-          fetchExecutiveSummary(undefined, 30)
+          fetchFunnelData(configWithDateRange),
+          fetchOverTimeData(configWithDateRange),
+          fetchPathAnalysis(configWithDateRange),
+          fetchLatencyData(configWithDateRange),
+          fetchAbnormalDropoffs(configWithDateRange),
+          fetchPriceSensitivity(configWithDateRange),
+          fetchCohortAnalysis(configWithDateRange),
+          fetchExecutiveSummary(undefined, days)
         ]);
         setData(funnelData);
         setOverTimeData(timeSeriesData);
@@ -370,10 +400,10 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
       }
     };
 
-    if (config.steps.length > 0) {
+    if (config.steps.length > 0 && dateRange) {
       loadData();
     }
-  }, [config]);
+  }, [config, dateRange]);
 
   // Apply injected steps from AI guided build
   useEffect(() => {
@@ -434,7 +464,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
     const newStep: FunnelStepConfig = {
       id: Date.now().toString(),
       label,
-      event_category: category,
+      event_category: category === 'custom' ? 'generic' : category,
       event_type: category === 'custom' ? (customEventData?.base_event_type || eventType) : eventType,
       filters: category === 'custom' ? (customEventData?.filters || []) : []
     };
@@ -1103,26 +1133,69 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
           ) : (
             /* Aggregate Metrics (when no segments) */
             <div className="grid grid-cols-4 gap-4">
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Total Conversion</div>
-              <div className="text-2xl font-bold text-slate-800">{totalConversion}%</div>
-                    <div className="text-xs text-green-600 mt-1 flex items-center">
-                <TrendingUp size={12} className="mr-1" /> +2.4% vs last {config.window}
+                {/* Total Conversion */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#10b98115' }}>
+                          <Target size={20} style={{ color: '#10b981' }} />
+                        </div>
+                        <span className="text-sm font-medium text-slate-600">Total Conversion</span>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-bold text-slate-900 mb-1">{totalConversion}%</div>
+                    <div className="text-xs text-green-600 flex items-center gap-1 mt-2">
+                      <TrendingUp size={12} /> +2.4% vs last {config.window}
                     </div>
                 </div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Dropped Off</div>
-              <div className="text-2xl font-bold text-slate-800">{totalDropped}</div>
-                    <div className="text-xs text-slate-400 mt-1">Guests lost</div>
+                
+                {/* Dropped Off */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#ef444415' }}>
+                          <TrendingDown size={20} style={{ color: '#ef4444' }} />
+                        </div>
+                        <span className="text-sm font-medium text-slate-600">Dropped Off</span>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-bold text-slate-900 mb-1">{totalDropped.toLocaleString()}</div>
+                    <div className="text-xs text-slate-500 mb-2">Guests lost</div>
                 </div>
-                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Revenue at Risk</div>
-              <div className="text-2xl font-bold text-red-600">${(totalRevenueAtRisk / 1000).toFixed(1)}k</div>
-                    <div className="text-xs text-red-500 mt-1 font-medium">High Alert</div>
+                
+                {/* Revenue at Risk */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#f59e0b15' }}>
+                          <DollarSign size={20} style={{ color: '#f59e0b' }} />
+                        </div>
+                        <span className="text-sm font-medium text-slate-600">Revenue at Risk</span>
+                      </div>
+                      {totalRevenueAtRisk > 10000 && (
+                        <span className="text-xs font-semibold px-2 py-1 rounded" style={{ 
+                          backgroundColor: '#ef444415', 
+                          color: '#ef4444' 
+                        }}>
+                          High Alert
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-2xl font-bold text-red-600 mb-1">${(totalRevenueAtRisk / 1000).toFixed(1)}k</div>
+                    <div className="text-xs text-red-500 mb-2 font-medium">High Alert</div>
                 </div>
-                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="text-slate-500 text-xs font-medium uppercase mb-1">Avg Time to Convert</div>
-                    <div className="text-2xl font-bold text-slate-800">
+                
+                {/* Avg Time to Convert */}
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-2 rounded-lg" style={{ backgroundColor: '#3b82f615' }}>
+                          <Clock size={20} style={{ color: '#3b82f6' }} />
+                        </div>
+                        <span className="text-sm font-medium text-slate-600">Avg Time to Convert</span>
+                      </div>
+                    </div>
+                    <div className="text-2xl font-bold text-slate-900 mb-1">
                       {(() => {
                         // Use the LAST step's cumulative time (time from start to final conversion)
                         const lastStep = latencyData[latencyData.length - 1];
@@ -1133,7 +1206,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                         return totalSeconds > 0 ? `${minutes}m ${seconds}s` : '--';
                       })()}
                     </div>
-                    <div className="text-xs text-slate-400 mt-1">Median duration</div>
+                    <div className="text-xs text-slate-500 mb-2">Median duration</div>
                 </div>
             </div>
           )}
@@ -1174,7 +1247,19 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
           
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 min-h-[500px]">
                 {activeTab === 'conversion' && (
-              <div className="h-[700px] w-full">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between px-6 pt-4">
+                  <h3 className="text-lg font-semibold text-slate-800">Funnel Conversion</h3>
+                  <div className="flex items-center gap-3">
+                    <DateFilter value={dateRange} onChange={setDateRange} />
+                    <ChartTypeSelector
+                      value={conversionChartType}
+                      onChange={setConversionChartType}
+                      availableTypes={['bar']}
+                    />
+                  </div>
+                </div>
+                <div className="h-[700px] w-full">
                 {/* Check if we have segments for comparison */}
                 {(() => {
                   // Empty funnel: prompt to add steps
@@ -1555,68 +1640,48 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                     );
                   })()}
                     </div>
+                </div>
                 )}
 
                  {activeTab === 'overTime' && (
-              <div className="h-[500px] w-full">
-                {overTimeData.length > 0 ? (
-                         <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={overTimeData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                      <defs>
-                        {config.steps.map((step, idx) => (
-                          <linearGradient key={step.id} id={`color-${step.id}`} x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'} stopOpacity={0.3}/>
-                            <stop offset="95%" stopColor={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'} stopOpacity={0}/>
-                          </linearGradient>
-                        ))}
-                      </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis 
-                        dataKey="date" 
-                        tick={{fontSize: 11, fill: '#64748b'}}
-                        tickFormatter={(value) => {
-                          const date = new Date(value);
-                          return `${date.getMonth() + 1}/${date.getDate()}`;
-                        }}
-                      />
-                      <YAxis tick={{fontSize: 11, fill: '#64748b'}} />
-                      <Tooltip 
-                        contentStyle={{ 
-                          backgroundColor: '#1e293b', 
-                          border: '1px solid #334155',
-                          borderRadius: '8px',
-                          color: '#fff'
-                        }}
-                        labelFormatter={(value) => {
-                          const date = new Date(value);
-                          return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                        }}
-                      />
-                      {config.steps.map((step, idx) => {
-                        const stepKey = step.label || step.event_type || `step_${idx + 1}`;
-                        return (
-                          <Area
-                            key={step.id}
-                            type="monotone"
-                            dataKey={stepKey}
-                            stackId="1"
-                            stroke={idx === config.steps.length - 1 ? '#10b981' : '#3b82f6'}
-                            fill={`url(#color-${step.id})`}
-                            strokeWidth={2}
-                            animationDuration={800}
-                          />
-                        );
-                      })}
-                            </AreaChart>
-                         </ResponsiveContainer>
-                ) : (
-                  <div className="h-full flex items-center justify-center text-slate-400">
-                    <div className="text-center">
-                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
-                      <p>Loading time-series data...</p>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between px-6 pt-4">
+                  <h3 className="text-lg font-semibold text-slate-800">Funnel Performance Over Time</h3>
+                  <div className="flex items-center gap-3">
+                    <DateFilter value={dateRange} onChange={setDateRange} />
+                    <ChartTypeSelector
+                      value={overTimeChartType}
+                      onChange={setOverTimeChartType}
+                      availableTypes={['area', 'line', 'bar', 'composed']}
+                    />
+                  </div>
+                </div>
+                <div className="h-[500px] w-full px-6">
+                  {overTimeData.length > 0 ? (
+                    <ChartRenderer
+                      data={overTimeData}
+                      chartType={overTimeChartType}
+                      dataKeys={config.steps.map(step => step.label || step.event_type || `step_${config.steps.indexOf(step) + 1}`)}
+                      xAxisKey="date"
+                      colors={config.steps.map((step, idx) => idx === config.steps.length - 1 ? '#10b981' : '#3b82f6')}
+                      height={500}
+                      stacked={overTimeChartType === 'area'}
+                      xAxisLabel="Date"
+                      yAxisLabel="Users"
+                      tooltipFormatter={(value: number, name: string) => [
+                        value.toLocaleString(),
+                        name
+                      ]}
+                    />
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-slate-400">
+                      <div className="text-center">
+                        <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                        <p>Loading time-series data...</p>
+                      </div>
                     </div>
-                    </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
 
@@ -2262,7 +2327,7 @@ const FilterBuilder: React.FC<FilterBuilderProps> = ({ step, eventSchema, onAddF
     
     onAddFilter({
       property: selectedProperty,
-      operator: selectedOperator,
+      operator: selectedOperator as EventFilter['operator'],
       value: parsedValue || filterValue
     });
     

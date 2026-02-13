@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Plus, X, TrendingUp, Users, BarChart3, Calendar, Filter, Brain, User, Zap, Sparkles } from 'lucide-react';
 import { EventFilter } from '../types';
+import DateFilter, { DateRange } from './DateFilter';
+import ChartTypeSelector, { ChartType } from './ChartTypeSelector';
+import ChartRenderer from './ChartRenderer';
 
 type SegmentMode = 'event' | 'behavioral' | 'guest';
 
@@ -107,6 +109,8 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
   const [timePeriod, setTimePeriod] = useState(30);
   const [groupBy, setGroupBy] = useState<string | null>(null);
   const [interval, setInterval] = useState('day');
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [chartType, setChartType] = useState<ChartType>('line');
   
   const [data, setData] = useState<SegmentationResult[]>([]);
   const [behavioralData, setBehavioralData] = useState<BehavioralSegmentsResponse | null>(null);
@@ -118,6 +122,15 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
   const [showEventModal, setShowEventModal] = useState(false);
   
   const API_BASE = 'http://localhost:8000';
+
+  // Initialize with default date range (last 30 days)
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startDate = thirtyDaysAgo.toISOString().split('T')[0];
+    setDateRange({ startDate, endDate: today });
+  }, []);
 
   // Measurements available
   const measurements = [
@@ -150,15 +163,30 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
   const fetchData = async () => {
     setIsLoading(true);
     try {
+      // Calculate time period from date range if available
+      let calculatedTimePeriod = timePeriod;
+      if (dateRange) {
+        const start = new Date(dateRange.startDate);
+        const end = new Date(dateRange.endDate);
+        calculatedTimePeriod = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+      }
+
       if (segmentMode === 'behavioral') {
+        const requestBody: any = {
+          time_period: calculatedTimePeriod,
+          interval,
+          segment_ids: selectedBehavioralSegments.length > 0 ? selectedBehavioralSegments : undefined,
+        };
+        if (dateRange) {
+          requestBody.date_range = {
+            start_date: dateRange.startDate,
+            end_date: dateRange.endDate,
+          };
+        }
         const response = await fetch(`${API_BASE}/api/analytics/behavioral-segments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            time_period: timePeriod,
-            interval,
-            segment_ids: selectedBehavioralSegments.length > 0 ? selectedBehavioralSegments : undefined,
-          }),
+          body: JSON.stringify(requestBody),
         });
         if (response.ok) {
           const result = await response.json();
@@ -170,14 +198,21 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
       }
       
       if (segmentMode === 'guest') {
+        const requestBody: any = {
+          time_period: calculatedTimePeriod,
+          interval,
+          segment_ids: selectedGuestSegments.length > 0 ? selectedGuestSegments : undefined,
+        };
+        if (dateRange) {
+          requestBody.date_range = {
+            start_date: dateRange.startDate,
+            end_date: dateRange.endDate,
+          };
+        }
         const response = await fetch(`${API_BASE}/api/analytics/guest-segments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            time_period: timePeriod,
-            interval,
-            segment_ids: selectedGuestSegments.length > 0 ? selectedGuestSegments : undefined,
-          }),
+          body: JSON.stringify(requestBody),
         });
         if (response.ok) {
           const result = await response.json();
@@ -191,16 +226,23 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
       // Event-based
       if (events.length === 0) return;
       
+      const requestBody: any = {
+        events,
+        measurement,
+        time_period: calculatedTimePeriod,
+        group_by: groupBy,
+        interval,
+      };
+      if (dateRange) {
+        requestBody.date_range = {
+          start_date: dateRange.startDate,
+          end_date: dateRange.endDate,
+        };
+      }
       const response = await fetch(`${API_BASE}/api/analytics/segmentation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          events,
-          measurement,
-          time_period: timePeriod,
-          group_by: groupBy,
-          interval,
-        }),
+        body: JSON.stringify(requestBody),
       });
       
       if (response.ok) {
@@ -219,9 +261,21 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
     }
   };
 
+  // Update time period when date range changes
   useEffect(() => {
-    fetchData();
-  }, [segmentMode, events, measurement, timePeriod, groupBy, interval, selectedBehavioralSegments, selectedGuestSegments]);
+    if (dateRange) {
+      const start = new Date(dateRange.startDate);
+      const end = new Date(dateRange.endDate);
+      const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+      setTimePeriod(days);
+    }
+  }, [dateRange]);
+
+  useEffect(() => {
+    if (dateRange) {
+      fetchData();
+    }
+  }, [segmentMode, events, measurement, timePeriod, groupBy, interval, selectedBehavioralSegments, selectedGuestSegments, dateRange]);
 
   // Apply injected segment mode from AI guided build
   useEffect(() => {
@@ -452,16 +506,8 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
             </>
           )}
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Time Period</label>
-            <select
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              value={timePeriod}
-              onChange={(e) => setTimePeriod(Number(e.target.value))}
-            >
-              {timePeriodOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+            <label className="block text-sm font-medium text-slate-700 mb-2">Date Range</label>
+            <DateFilter value={dateRange} onChange={setDateRange} />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">Interval</label>
@@ -631,34 +677,33 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
           </div>
           {behavioralChartData.length > 0 && (
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-                <Calendar size={20} className="text-purple-600" />
-                Sessions by {segmentMode === 'behavioral' ? 'Behavior' : 'Guest'} Over Time
-              </h3>
-              <ResponsiveContainer width="100%" height={350}>
-                <LineChart data={behavioralChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }} />
-                  <Legend wrapperStyle={{ fontSize: '12px' }} />
-                  {Object.keys(segmentResponse.time_series_by_segment || {}).map((seg, idx) => {
-                    const def = segmentResponse.segment_definitions?.[seg];
-                    const color = def?.color || COLORS[idx % COLORS.length];
-                    return (
-                      <Line
-                        key={seg}
-                        type="monotone"
-                        dataKey={seg}
-                        name={def?.label || seg}
-                        stroke={color}
-                        strokeWidth={2}
-                        dot={{ r: 4 }}
-                      />
-                    );
-                  })}
-                </LineChart>
-              </ResponsiveContainer>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <Calendar size={20} className="text-purple-600" />
+                  Sessions by {segmentMode === 'behavioral' ? 'Behavior' : 'Guest'} Over Time
+                </h3>
+                <div className="flex items-center gap-3">
+                  <DateFilter value={dateRange} onChange={setDateRange} />
+                  <ChartTypeSelector
+                    value={chartType}
+                    onChange={setChartType}
+                    availableTypes={['line', 'area', 'bar', 'composed']}
+                  />
+                </div>
+              </div>
+              <ChartRenderer
+                data={behavioralChartData}
+                chartType={chartType}
+                dataKeys={Object.keys(segmentResponse.time_series_by_segment || {})}
+                xAxisKey="date"
+                colors={Object.keys(segmentResponse.time_series_by_segment || {}).map((seg, idx) => {
+                  const def = segmentResponse.segment_definitions?.[seg];
+                  return def?.color || COLORS[idx % COLORS.length];
+                })}
+                height={350}
+                xAxisLabel="Date"
+                yAxisLabel="Sessions"
+              />
             </div>
           )}
         </>
@@ -692,32 +737,30 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
 
           {/* Time Series Chart */}
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-            <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <Calendar size={20} className="text-purple-600" />
-              Trend Over Time
-            </h3>
-            <ResponsiveContainer width="100%" height={350}>
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <Calendar size={20} className="text-purple-600" />
+                Trend Over Time
+              </h3>
+              <div className="flex items-center gap-3">
+                <DateFilter value={dateRange} onChange={setDateRange} />
+                <ChartTypeSelector
+                  value={chartType}
+                  onChange={setChartType}
+                  availableTypes={['line', 'area', 'bar', 'composed']}
                 />
-                <Legend wrapperStyle={{ fontSize: '12px' }} />
-                {data.map((result, index) => (
-                  <Line
-                    key={result.event_id}
-                    type="monotone"
-                    dataKey={result.event_id}
-                    name={result.event_label}
-                    stroke={COLORS[index % COLORS.length]}
-                    strokeWidth={2}
-                    dot={{ r: 4 }}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+              </div>
+            </div>
+            <ChartRenderer
+              data={chartData}
+              chartType={chartType}
+              dataKeys={data.map(d => d.event_id)}
+              xAxisKey="date"
+              colors={COLORS}
+              height={350}
+              xAxisLabel="Date"
+              yAxisLabel={measurement === 'revenue_per_user' ? 'Revenue ($)' : measurement === 'uniques' ? 'Unique Users' : 'Count'}
+            />
           </div>
 
           {/* Breakdown by Group */}
@@ -730,17 +773,16 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
                       <Filter size={20} style={{ color: COLORS[index % COLORS.length] }} />
                       {result.event_label} by {groupByOptions.find(g => g.id === groupBy)?.name}
                     </h3>
-                    <ResponsiveContainer width="100%" height={280}>
-                      <BarChart data={result.breakdown}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis dataKey="group" tick={{ fontSize: 11 }} />
-                        <YAxis tick={{ fontSize: 11 }} />
-                        <Tooltip 
-                          contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
-                        />
-                        <Bar dataKey="value" fill={COLORS[index % COLORS.length]} radius={[8, 8, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
+                    <ChartRenderer
+                      data={result.breakdown}
+                      chartType="bar"
+                      dataKeys={['value']}
+                      xAxisKey="group"
+                      colors={[COLORS[index % COLORS.length]]}
+                      height={280}
+                      xAxisLabel={groupByOptions.find(g => g.id === groupBy)?.name || 'Group'}
+                      yAxisLabel="Value"
+                    />
                   </div>
                 )
               ))}

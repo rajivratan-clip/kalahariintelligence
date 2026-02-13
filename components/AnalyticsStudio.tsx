@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus } from 'lucide-react';
+import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus, Filter, ChevronDown, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import FunnelLab from './FunnelLab';
 import RevenueImpactView from './RevenueImpactView';
 import HospitalityMetricsView from './HospitalityMetricsView';
 import SegmentationView from './SegmentationView';
+import DateFilter, { DateRange } from './DateFilter';
 import { FunnelDefinition, FunnelStepConfig, AnalyticsConfigUpdate, ViewConfig } from '../types';
 import { useAiOrchestrator } from '../engines/useAiOrchestrator';
+import { fetchFunnelData } from '../services/funnelService';
 
 // Analysis types that can be selected
 type AnalysisType = 'funnel' | 'segmentation' | 'retention' | 'paths';
@@ -19,9 +21,9 @@ type FunnelMeasurement =
   | 'price_sensitivity'
   | 'cohort_analysis'
   | 'executive_summary'
-  | 'revenue_impact'  // NEW
-  | 'ai_insights'      // NEW
-  | 'hospitality_metrics'; // NEW
+  | 'revenue_impact'
+  | 'ai_insights'
+  | 'hospitality_metrics';
 
 // Measurement types for Segmentation analysis
 type SegmentationMeasurement = 
@@ -30,8 +32,8 @@ type SegmentationMeasurement =
   | 'active_percent' 
   | 'average' 
   | 'frequency'
-  | 'revenue_per_user'      // NEW
-  | 'hospitality_breakdown'; // NEW
+  | 'revenue_per_user'
+  | 'hospitality_breakdown';
 
 type MeasurementType = FunnelMeasurement | SegmentationMeasurement;
 
@@ -163,6 +165,18 @@ interface AnalyticsStudioProps {
   applyConfigRef?: React.MutableRefObject<((u: AnalyticsConfigUpdate) => void) | null>;
 }
 
+interface KPIMetric {
+  label: string;
+  value: number | string;
+  subtitle?: string;
+  change?: number; // percentage change
+  changeType?: 'increase' | 'decrease';
+  previousValue?: number;
+  icon: React.ReactNode;
+  color: string;
+  badge?: string;
+}
+
 const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskAI, applyConfigRef }) => {
   const {
     sessions,
@@ -177,6 +191,9 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
   const [analysisType, setAnalysisType] = useState<AnalysisType>('funnel');
   const [measurement, setMeasurement] = useState<MeasurementType>('conversion');
   const [eventSchema, setEventSchema] = useState<any>(null);
+  const [dateRange, setDateRange] = useState<DateRange | null>(null);
+  const [kpiMetrics, setKpiMetrics] = useState<KPIMetric[]>([]);
+  const [isLoadingKPIs, setIsLoadingKPIs] = useState(false);
   
   // Funnel configuration - will be updated from FunnelLab
   const [funnelConfig, setFunnelConfig] = useState<FunnelDefinition>({
@@ -198,10 +215,147 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
   // Child views register a getter; header "Ask AI" calls it for current context
   const explainPayloadGetterRef = useRef<(() => { title: string; data: unknown } | null) | null>(null);
 
+  // Initialize date range
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const startDate = thirtyDaysAgo.toISOString().split('T')[0];
+    setDateRange({ startDate, endDate: today });
+  }, []);
+
   // Ensure default session exists on mount
   useEffect(() => {
     ensureDefaultSession();
   }, [ensureDefaultSession]);
+
+  // Fetch KPI metrics
+  useEffect(() => {
+    const fetchKPIs = async () => {
+      if (!dateRange || funnelConfig.steps.length === 0) return;
+      
+      setIsLoadingKPIs(true);
+      try {
+        const configWithDateRange: FunnelDefinition = {
+          ...funnelConfig,
+          global_filters: {
+            ...funnelConfig.global_filters,
+            date_range: {
+              start: dateRange.startDate,
+              end: dateRange.endDate,
+            }
+          }
+        };
+        
+        const currentData = await fetchFunnelData(configWithDateRange);
+        
+        // Calculate previous period for comparison
+        const daysDiff = Math.ceil((new Date(dateRange.endDate).getTime() - new Date(dateRange.startDate).getTime()) / (1000 * 60 * 60 * 24));
+        const prevStartDate = new Date(dateRange.startDate);
+        prevStartDate.setDate(prevStartDate.getDate() - daysDiff);
+        const prevEndDate = new Date(dateRange.startDate);
+        
+        const prevConfig: FunnelDefinition = {
+          ...configWithDateRange,
+          global_filters: {
+            ...configWithDateRange.global_filters,
+            date_range: {
+              start: prevStartDate.toISOString().split('T')[0],
+              end: prevEndDate.toISOString().split('T')[0],
+            }
+          }
+        };
+        
+        const previousData = await fetchFunnelData(prevConfig);
+        
+        if (currentData.length > 0) {
+          const totalVisitors = currentData[0]?.visitors || 0;
+          const totalConversions = currentData[currentData.length - 1]?.visitors || 0;
+          const conversionRate = totalVisitors > 0 ? (totalConversions / totalVisitors) * 100 : 0;
+          
+          // Calculate total revenue at risk (sum across all steps)
+          const totalRevenueAtRisk = currentData.reduce((sum, step) => sum + (step.revenueAtRisk || 0), 0);
+          
+          // Calculate dropped off count
+          const droppedOff = totalVisitors - totalConversions;
+          
+          // Get average time to convert (from last step or calculate average)
+          let avgTimeToConvert = '0m 0s';
+          if (currentData.length > 0) {
+            const lastStep = currentData[currentData.length - 1];
+            if (lastStep.avgTime) {
+              avgTimeToConvert = lastStep.avgTime;
+            } else {
+              // Calculate average time across all steps
+              const totalTimeSeconds = currentData.reduce((sum, step) => {
+                const timeStr = step.avgTime || '0m 0s';
+                const match = timeStr.match(/(\d+)m\s*(\d+)s/);
+                if (match) {
+                  return sum + parseInt(match[1]) * 60 + parseInt(match[2]);
+                }
+                return sum;
+              }, 0);
+              const avgSeconds = currentData.length > 0 ? totalTimeSeconds / currentData.length : 0;
+              const minutes = Math.floor(avgSeconds / 60);
+              const seconds = Math.floor(avgSeconds % 60);
+              avgTimeToConvert = `${minutes}m ${seconds}s`;
+            }
+          }
+          
+          // Calculate previous period metrics for comparison
+          let prevConversionRate = 0;
+          let conversionChange = 0;
+          if (previousData.length > 0) {
+            const prevTotalVisitors = previousData[0]?.visitors || 0;
+            const prevConversions = previousData[previousData.length - 1]?.visitors || 0;
+            prevConversionRate = prevTotalVisitors > 0 ? (prevConversions / prevTotalVisitors) * 100 : 0;
+            conversionChange = prevConversionRate > 0 ? ((conversionRate - prevConversionRate) / prevConversionRate) * 100 : 0;
+          }
+          
+          setKpiMetrics([
+            {
+              label: 'Total Conversion',
+              value: conversionRate.toFixed(1) + '%',
+              change: conversionChange,
+              changeType: conversionChange >= 0 ? 'increase' : 'decrease',
+              subtitle: conversionChange !== 0 ? `${conversionChange >= 0 ? '+' : ''}${conversionChange.toFixed(1)}% vs last` : undefined,
+              icon: <Target size={20} />,
+              color: '#10b981'
+            },
+            {
+              label: 'Dropped Off',
+              value: droppedOff.toLocaleString(),
+              subtitle: 'Guests lost',
+              icon: <ArrowDownRight size={20} />,
+              color: '#ef4444'
+            },
+            {
+              label: 'Revenue at Risk',
+              value: `$${(totalRevenueAtRisk / 1000).toFixed(1)}k`,
+              subtitle: 'High Alert',
+              icon: <DollarSign size={20} />,
+              color: '#f59e0b',
+              badge: totalRevenueAtRisk > 10000 ? 'High Alert' : undefined
+            },
+            {
+              label: 'Avg Time to Convert',
+              value: avgTimeToConvert,
+              icon: <Clock size={20} />,
+              color: '#3b82f6'
+            }
+          ]);
+        }
+      } catch (error) {
+        console.error('Error fetching KPIs:', error);
+      } finally {
+        setIsLoadingKPIs(false);
+      }
+    };
+    
+    if (analysisType === 'funnel') {
+      fetchKPIs();
+    }
+  }, [funnelConfig, dateRange, analysisType]);
 
   // Sync active session's view config to local state
   useEffect(() => {
@@ -251,7 +405,7 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
             label: s.label,
             event_type: s.event_type,
             event_category: s.event_category,
-            filters: s.event_category ? [] : [], // Filters can be populated later from AI
+            filters: s.event_category ? [] : [],
           }));
           nextFunnelConfig = { ...nextFunnelConfig, steps };
           setInjectedFunnelSteps(steps);
@@ -375,53 +529,33 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
     deleteSession(sessionId);
   };
 
-  return (
-    <div className="h-full w-full flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 overflow-hidden">
-      {/* Header */}
-      <div className="bg-white border-b border-slate-200 flex-shrink-0 z-10 shadow-sm">
-        <div className="max-w-[1600px] mx-auto px-6 py-4">
-          {/* Tab Bar */}
-          {sessions.length > 0 && (
-            <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-2">
-              {sessions.map((session) => (
-                <button
-                  key={session.id}
-                  onClick={() => handleTabSwitch(session.id)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
-                    activeSessionId === session.id
-                      ? 'bg-purple-100 text-purple-700 border border-purple-300'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-transparent'
-                  }`}
-                >
-                  <span>{session.title}</span>
-                  {sessions.length > 1 && (
-                    <button
-                      onClick={(e) => handleTabClose(e, session.id)}
-                      className="ml-1 hover:bg-white/50 rounded p-0.5"
-                    >
-                      <X size={14} />
-                    </button>
-                  )}
-                </button>
-              ))}
-              <button
-                onClick={handleNewTab}
-                className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg border border-transparent transition-all"
-                title="New Analysis Tab"
-              >
-                <Plus size={16} />
-                <span className="hidden sm:inline">New Tab</span>
-              </button>
-            </div>
-          )}
 
-          <div className="flex items-center justify-between mb-4">
+  return (
+    <div className="h-full w-full flex flex-col bg-white overflow-hidden">
+      {/* Top Header Bar */}
+      <div className="bg-white border-b border-slate-200 flex-shrink-0 z-20 shadow-sm">
+        <div className="w-full px-6 py-3">
+          {/* Breadcrumbs */}
+          <div className="flex items-center gap-2 text-sm text-slate-500 mb-2">
+            <span>Analytics</span>
+            <span>/</span>
+            <span className="text-slate-900 font-medium">Analytics Studio</span>
+            {analysisType && (
+              <>
+                <span>/</span>
+                <span className="capitalize">{analysisType === 'funnel' ? 'Funnel Analysis' : analysisType}</span>
+              </>
+            )}
+          </div>
+
+          {/* Title and Action Buttons */}
+          <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-slate-900">Analytics Studio</h1>
-              <p className="text-sm text-slate-500 mt-1">Unified analysis platform - Better than Amplitude</p>
+              <p className="text-sm text-slate-500 mt-0.5">Manage your analytics and insights here</p>
             </div>
-            <div className="flex gap-2">
-              <button className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">
+            <div className="flex items-center gap-3">
+              <button className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
                 💾 Save Analysis
               </button>
               <button
@@ -452,108 +586,159 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
                     }
                   }
                 }}
-                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2"
+                className="px-5 py-2.5 text-sm font-semibold text-white rounded-lg transition-all flex items-center gap-2 shadow-sm hover:shadow-md"
+                style={{ backgroundColor: '#0947A4' }}
               >
                 <Sparkles size={16} />
-                🤖 Ask AI
+                Ask AI
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Tab Bar */}
+      <div className="bg-white border-b border-slate-200 flex-shrink-0">
+        <div className="w-full px-6">
+          {/* Session Tabs */}
+          {sessions.length > 0 && (
+            <div className="flex items-center gap-2 py-2 overflow-x-auto">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  onClick={() => handleTabSwitch(session.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all whitespace-nowrap ${
+                    activeSessionId === session.id
+                      ? 'bg-[#0947A4] text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  <span>{session.title}</span>
+                  {sessions.length > 1 && (
+                    <button
+                      onClick={(e) => handleTabClose(e, session.id)}
+                      className="ml-1 hover:bg-white/20 rounded p-0.5"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </button>
+              ))}
+              <button
+                onClick={handleNewTab}
+                className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-md transition-all"
+                title="New Analysis Tab"
+              >
+                <Plus size={14} />
+                <span className="hidden sm:inline">New Tab</span>
+              </button>
+            </div>
+          )}
 
           {/* Analysis Type Tabs */}
-          <div className="flex gap-2 border-b border-slate-200">
+          <div className="flex items-center gap-1 border-t border-slate-200 pt-1">
             <button
               onClick={() => setAnalysisType('funnel')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
                 analysisType === 'funnel'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  ? 'text-[#0947A4]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <div className="flex items-center gap-2">
                 <BarChart3 size={16} />
-                🔍 Funnel Analysis
+                <span>Overview</span>
               </div>
+              {analysisType === 'funnel' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
+              )}
             </button>
             <button
               onClick={() => setAnalysisType('segmentation')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
                 analysisType === 'segmentation'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  ? 'text-[#0947A4]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <div className="flex items-center gap-2">
                 <Users size={16} />
-                👥 Segmentation
+                <span>Segmentation</span>
               </div>
+              {analysisType === 'segmentation' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
+              )}
             </button>
             <button
               onClick={() => setAnalysisType('retention')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
                 analysisType === 'retention'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  ? 'text-[#0947A4]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <div className="flex items-center gap-2">
                 <TrendingUp size={16} />
-                🔄 Retention
-                <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Coming Soon</span>
+                <span>Retention</span>
+                <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Soon</span>
               </div>
+              {analysisType === 'retention' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
+              )}
             </button>
             <button
               onClick={() => setAnalysisType('paths')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
                 analysisType === 'paths'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  ? 'text-[#0947A4]'
+                  : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <div className="flex items-center gap-2">
                 <GitBranch size={16} />
-                🛤️ Paths
-                <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Coming Soon</span>
+                <span>Paths</span>
+                <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Soon</span>
               </div>
+              {analysisType === 'paths' && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
+              )}
             </button>
           </div>
 
-          {/* Measured As Selector */}
-          <div className="mt-4 flex items-center gap-3">
-            <span className="text-sm font-medium text-slate-700">📊 Measured as:</span>
-            <div className="relative">
-              <select
-                value={measurement}
-                onChange={(e) => setMeasurement(e.target.value as MeasurementType)}
-                className="appearance-none pl-3 pr-10 py-2 text-sm font-medium bg-white border border-slate-300 rounded-lg text-slate-900 hover:border-purple-400 focus:border-purple-500 focus:ring-2 focus:ring-purple-500 focus:ring-opacity-20 cursor-pointer transition-colors"
-              >
-                {availableMeasurements.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label} {option.isNew ? '⭐ NEW' : ''}
-                  </option>
-                ))}
-              </select>
-              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                ▼
+          {/* Filters Row */}
+          <div className="flex items-center gap-3 py-3 border-t border-slate-200">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-slate-700">Measured as:</span>
+              <div className="relative">
+                <select
+                  value={measurement}
+                  onChange={(e) => setMeasurement(e.target.value as MeasurementType)}
+                  className="appearance-none pl-3 pr-8 py-1.5 text-sm font-medium bg-white border border-slate-300 rounded-lg text-slate-900 hover:border-[#0947A4] focus:border-[#0947A4] focus:ring-2 focus:ring-[#0947A4] focus:ring-opacity-20 cursor-pointer transition-colors"
+                >
+                  {availableMeasurements.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label} {option.isNew ? '⭐ NEW' : ''}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
               </div>
             </div>
-            {availableMeasurements.find(m => m.id === measurement)?.description && (
-              <span className="text-xs text-slate-500">
-                • {availableMeasurements.find(m => m.id === measurement)?.description}
-              </span>
-            )}
-            {availableMeasurements.find(m => m.id === measurement)?.isNew && (
-              <span className="text-xs bg-gradient-to-r from-purple-600 to-pink-600 text-white px-2 py-1 rounded font-medium">
-                ⭐ Better than Amplitude
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <DateFilter value={dateRange} onChange={setDateRange} />
+            </div>
+            <button className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
+              <Filter size={14} />
+              <span>More Filters</span>
+            </button>
           </div>
         </div>
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-[1600px] mx-auto px-6 py-6">
+      <div className="flex-1 overflow-y-auto bg-slate-50">
+        <div className="w-full px-6 py-6">
+          {/* Main Content */}
           {analysisType === 'funnel' && (
             <>
               {/* Revenue Impact View */}
@@ -580,25 +765,25 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
             </>
           )}
 
-        {analysisType === 'segmentation' && (
-          <SegmentationView 
-            eventSchema={eventSchema || {}} 
-            onExplain={onExplain}
-            onExplainPayloadReady={(getter) => { explainPayloadGetterRef.current = getter; }}
-            injectedSegmentMode={injectedSegmentMode}
-            onInjectedSegmentModeConsumed={() => setInjectedSegmentMode(null)}
-          />
-        )}
+          {analysisType === 'segmentation' && (
+            <SegmentationView 
+              eventSchema={eventSchema || {}} 
+              onExplain={onExplain}
+              onExplainPayloadReady={(getter) => { explainPayloadGetterRef.current = getter; }}
+              injectedSegmentMode={injectedSegmentMode}
+              onInjectedSegmentModeConsumed={() => setInjectedSegmentMode(null)}
+            />
+          )}
 
-        {(analysisType === 'retention' || analysisType === 'paths') && (
-          <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
-            <Sparkles size={48} className="mx-auto text-slate-300 mb-4" />
-            <h3 className="text-lg font-bold text-slate-900 mb-2">Coming Soon</h3>
-            <p className="text-slate-500">
-              This analysis type is under development
-            </p>
-          </div>
-        )}
+          {(analysisType === 'retention' || analysisType === 'paths') && (
+            <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+              <Sparkles size={48} className="mx-auto text-slate-300 mb-4" />
+              <h3 className="text-lg font-bold text-slate-900 mb-2">Coming Soon</h3>
+              <p className="text-slate-500">
+                This analysis type is under development
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
