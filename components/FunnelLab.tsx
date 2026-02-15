@@ -1799,7 +1799,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
             )}
 
                 {activeTab === 'timeToConvert' && (
-              <div className="h-[600px] p-6">
+              <div className="h-[600px] min-h-0 overflow-y-auto p-6">
                 <div className="mb-6">
                   <h3 className="text-lg font-semibold text-slate-800 mb-2">Time to Convert</h3>
                   <p className="text-sm text-slate-500">How long it takes users to reach each step from session start</p>
