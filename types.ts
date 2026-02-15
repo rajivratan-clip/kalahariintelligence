@@ -172,6 +172,31 @@ export interface ViewConfig {
   created_at?: string;
 }
 
+/** Structured funnel step for chart_data */
+export interface FunnelChartStep {
+  step_name: string;
+  visitors: number;
+  conversion_rate: number;
+  drop_off_count: number;
+  drop_off_rate: number;
+}
+
+/** Structured funnel response from /api/ai/chat */
+export interface StructuredFunnelResponse {
+  type: 'funnel_analysis';
+  summary: string;
+  metrics: {
+    total_visitors: number;
+    final_conversions: number;
+    overall_conversion_rate: number;
+    total_dropped: number;
+  };
+  chart_data: FunnelChartStep[];
+  causes?: string[];
+  suggested_actions?: Array<{ label: string; action_id: string }>;
+  markdown?: string;
+}
+
 /** Enhanced AI response with view configuration */
 export interface AiEngineResponse {
   markdown: string; // Chat response text
@@ -183,4 +208,11 @@ export interface AiEngineResponse {
     action_score: number;
     suggested_action?: string;
   }>;
+  /** When backend returns structured (e.g. funnel_analysis) */
+  type?: 'funnel_analysis' | 'markdown';
+  summary?: string;
+  metrics?: StructuredFunnelResponse['metrics'];
+  chart_data?: FunnelChartStep[];
+  causes?: string[];
+  suggested_actions?: Array<{ label: string; action_id: string }>;
 }

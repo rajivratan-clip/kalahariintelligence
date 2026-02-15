@@ -42,3 +42,4 @@ venv/
 ai/
 
 *.md
+scripts/verify_revenue_for_rpv.sql

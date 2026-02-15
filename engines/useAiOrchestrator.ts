@@ -28,11 +28,22 @@ export interface ViewConfig {
   created_at?: string;
 }
 
+export interface StructuredMessagePayload {
+  type: 'funnel_analysis';
+  summary?: string;
+  metrics?: { total_visitors: number; final_conversions: number; overall_conversion_rate: number; total_dropped: number };
+  chart_data?: Array<{ step_name: string; visitors: number; conversion_rate: number; drop_off_count: number; drop_off_rate: number }>;
+  causes?: string[];
+  suggested_actions?: Array<{ label: string; action_id: string }>;
+}
+
 export interface ChatMessageLite {
   id: string;
   role: 'user' | 'model';
   text: string;
   timestamp?: string;
+  /** When AI returns structured response (e.g. funnel_analysis) */
+  structured?: StructuredMessagePayload;
 }
 
 export interface SessionContext {

@@ -21,41 +21,68 @@ export const generateInsight = async (
   conversationSummary?: string | null
 ): Promise<AiEngineResponse> => {
   try {
-    const response = await fetch('http://localhost:8000/api/ai/insight', {
+    // Prefer structured chat endpoint for card-ready responses (funnel, etc.)
+    const chatResponse = await fetch('http://localhost:8000/api/ai/chat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         context_name: contextName,
         data,
         user_query: userQuery,
-        current_view: currentView, // Send current screen state
-        session_analyses: sessionAnalyses, // For "compare to last month" context
-        conversation_summary: conversationSummary, // Include conversation summary for context compression
+        response_format: 'structured',
+        current_view: currentView,
+        session_analyses: sessionAnalyses,
       }),
     });
 
-    if (!response.ok) {
-      console.error('AI insight API error:', response.status, await response.text());
+    if (!chatResponse.ok) {
+      console.error('AI chat API error:', chatResponse.status, await chatResponse.text());
+      return { markdown: 'Unable to generate insights at this time. (AI API error)' };
+    }
+
+    const result = await chatResponse.json();
+
+    if (result.type === 'funnel_analysis') {
       return {
-        markdown: 'Unable to generate insights at this time. (AI API error)',
+        markdown: result.markdown || result.summary || '',
+        type: 'funnel_analysis',
+        summary: result.summary,
+        metrics: result.metrics,
+        chart_data: result.chart_data,
+        causes: result.causes,
+        suggested_actions: result.suggested_actions,
       };
     }
 
-    const result = await response.json();
-    
-    // Support both old format (just insight string) and new format (AiEngineResponse)
-    if (typeof result === 'string' || result.insight) {
+    if (result.type === 'markdown' || result.markdown) {
       return {
-        markdown: typeof result === 'string' ? result : result.insight || 'No insights generated.',
+        markdown: result.markdown || 'No insights generated.',
         view_config: result.view_config,
         config_updates: result.config_updates,
         proactive_insights: result.proactive_insights,
       };
     }
 
-    return result as AiEngineResponse;
+    // Fallback to legacy insight endpoint if chat returned unexpected shape
+    const insightResponse = await fetch('http://localhost:8000/api/ai/insight', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        context_name: contextName,
+        data,
+        user_query: userQuery,
+      }),
+    });
+    if (!insightResponse.ok) {
+      return { markdown: 'Unable to generate insights at this time. (AI API error)' };
+    }
+    const legacy = await insightResponse.json();
+    return {
+      markdown: typeof legacy === 'string' ? legacy : legacy.insight || 'No insights generated.',
+      view_config: legacy.view_config,
+      config_updates: legacy.config_updates,
+      proactive_insights: legacy.proactive_insights,
+    };
   } catch (error) {
     console.error("AI Insight Error:", error);
     return {
@@ -157,18 +184,21 @@ export const guidedBuild = async (
 
 export const fetchSuggestedQuestions = async (
   contextName: string,
-  data: any
+  data: any,
+  options?: { anomalies?: Array<{ description?: string; anomaly_type?: string; severity?: string }>; segment?: string }
 ): Promise<string[]> => {
   try {
+    const body: Record<string, unknown> = {
+      context_name: contextName,
+      data: data ?? {},
+    };
+    if (options?.anomalies?.length) body.anomalies = options.anomalies;
+    if (options?.segment) body.segment = options.segment;
+
     const response = await fetch('http://localhost:8000/api/ai/suggest-questions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        context_name: contextName,
-        data,
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {

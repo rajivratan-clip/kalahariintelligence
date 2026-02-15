@@ -11,7 +11,7 @@ import json
 import urllib.request
 import uuid
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = FastAPI(title="ResortIQ ClickHouse API")
 
@@ -4005,23 +4005,55 @@ async def guided_build(request: GuidedBuildRequest) -> Dict[str, Any]:
 class AiSuggestRequest(BaseModel):
     """Payload for generating suggested follow-up questions."""
 
-    context_name: str
-    data: Any
+    context_name: str = "General Query"
+    data: Optional[Any] = None
+    anomalies: Optional[List[Dict[str, Any]]] = None  # From GET /api/ai/anomalies
+    segment: Optional[str] = None  # e.g. "mobile", "desktop"
 
 
 @app.post("/api/ai/suggest-questions")
 async def suggest_questions(request: AiSuggestRequest) -> Dict[str, Any]:
     """
     Given the current chart context (Funnel, Segment, Friction, Revenue),
-    return 3–4 follow-up questions that lead to business decisions.
+    or current anomalies/segment, return 4–6 follow-up questions.
     
-    Supports both funnel and segmentation analysis.
+    Supports funnel, segmentation, and anomaly-aware suggestions.
     """
     try:
-        d = request.data if isinstance(request.data, dict) else {}
+        d = (request.data if isinstance(request.data, dict) else {}) or {}
+        anomalies = request.anomalies or []
+        segment = request.segment or ""
         is_seg = _is_segmentation_data(d)
+        has_anomalies = len(anomalies) > 0
 
-        if is_seg:
+        if has_anomalies and not d:
+            # Anomaly-aware suggestions when no chart context
+            system_prompt = (
+                "You are a marketing intelligence advisor. You receive a list of recent anomalies "
+                "(each with anomaly_type, severity, description, metadata). Generate 4-6 SHORT questions (5-10 words each) "
+                "that a user could ask to investigate these anomalies. Reference the anomaly content (e.g. 'Why is mobile conversion dropping?'). "
+                "Output ONLY a strict JSON array of strings."
+            )
+            user_payload = {"anomalies": [{"description": a.get("description"), "anomaly_type": a.get("anomaly_type"), "severity": a.get("severity")} for a in anomalies[:5]], "segment": segment}
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "Generate 4-6 SHORT clickable questions to investigate these anomalies. Output ONLY a JSON array.\n\n" + json.dumps(user_payload, default=str)},
+            ]
+            raw = call_azure_gpt(messages)
+            try:
+                questions = json.loads(raw)
+                if not isinstance(questions, list):
+                    questions = []
+            except Exception:
+                questions = [
+                    "Why is conversion down?",
+                    "Show funnel for last 7 days",
+                    "Which segment is most affected?",
+                    "What is the revenue impact?",
+                ]
+            questions = [q for q in questions if isinstance(q, str) and q.strip()][:6]
+            return {"questions": questions or ["Why is conversion down?", "Show funnel for last 7 days", "Find anomaly in last 24h"]}
+        elif is_seg:
             system_prompt = (
                 "You are a strategic marketing intelligence advisor for hospitality brands.\n"
                 "Based on the SEGMENTATION DATA provided (behavioral_segments, guest_segments, or event_results), "
@@ -4104,6 +4136,168 @@ async def suggest_questions(request: AiSuggestRequest) -> Dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"AI suggest-questions error: {str(exc)}")
+
+
+class ChatRequest(BaseModel):
+    """Unified chat/insight request for structured or markdown response."""
+    context_name: str = "General Query"
+    data: Optional[Any] = None
+    user_query: Optional[str] = None
+    response_format: Optional[str] = None  # "structured" for card-ready JSON
+    current_view: Optional[Dict[str, Any]] = None
+    session_analyses: Optional[List[Dict[str, Any]]] = None
+
+
+def _user_wants_funnel(user_query: Optional[str]) -> bool:
+    """Heuristic: does the user query suggest funnel analysis?"""
+    if not user_query or not user_query.strip():
+        return True  # Default to funnel when no specific query
+    q = user_query.strip().lower()
+    funnel_keywords = [
+        "funnel", "conversion", "drop", "drop-off", "dropoff", "steps", "booking",
+        "show funnel", "funnel for", "last 7 days", "last 14 days", "biggest drop",
+    ]
+    return any(k in q for k in funnel_keywords)
+
+
+async def _run_default_funnel_last_7_days() -> List[Dict[str, Any]]:
+    """Run funnel for last 7 days with default hospitality steps. Returns list of step dicts with drop_off_count."""
+    end_d = datetime.now().date()
+    start_d = end_d - timedelta(days=7)
+    date_range = {"start": str(start_d), "end": str(end_d)}
+    steps = [
+        FunnelStepRequest(event_type=s["event_type"], label=s.get("label"), event_category=s.get("event_category", "hospitality"))
+        for s in GUIDED_BUILD_FUNNEL_STEPS
+    ]
+    req = FunnelRequest(steps=steps, completed_within=7, date_range=date_range)
+    funnel_response = await get_funnel_data(req)
+    raw_data = funnel_response.get("data") or []
+    # Build funnel_conversion with drop_off_count
+    funnel_conversion = []
+    for i, row in enumerate(raw_data):
+        prev_visitors = raw_data[i - 1]["visitors"] if i > 0 else row.get("visitors", 0)
+        visitors = row.get("visitors", 0)
+        drop_off_count = max(0, prev_visitors - visitors) if i > 0 else 0
+        funnel_conversion.append({
+            "step_name": row.get("step_name", ""),
+            "visitors": visitors,
+            "conversion_rate": row.get("conversion_rate", 0),
+            "drop_off_count": int(drop_off_count),
+            "drop_off_rate": row.get("drop_off_rate", 0),
+        })
+    return funnel_conversion
+
+
+@app.post("/api/ai/chat")
+async def ai_chat(request: ChatRequest) -> Dict[str, Any]:
+    """
+    Unified chat endpoint. When response_format is "structured" and the query suggests
+    funnel analysis, runs ClickHouse funnel (if no data provided) and returns
+    structured JSON for UI cards (summary, chart_data, causes, suggested_actions).
+    """
+    try:
+        user_query = (request.user_query or "").strip()
+        use_structured = request.response_format == "structured"
+        d = request.data if isinstance(request.data, dict) else {}
+
+        # Decide funnel data: use provided data or run default funnel
+        funnel_conversion = d.get("funnel_conversion") if isinstance(d.get("funnel_conversion"), list) else None
+        if use_structured and _user_wants_funnel(user_query):
+            if not funnel_conversion and (not d or "funnel_conversion" not in d):
+                try:
+                    funnel_conversion = await _run_default_funnel_last_7_days()
+                except Exception as e:
+                    print(f"[ai/chat] Default funnel run failed: {e}")
+                    funnel_conversion = []
+
+        if use_structured and funnel_conversion:
+            # Build metrics from funnel_conversion
+            total_visitors = funnel_conversion[0]["visitors"] if funnel_conversion else 0
+            final_conversions = funnel_conversion[-1]["visitors"] if funnel_conversion else 0
+            overall_rate = (final_conversions / total_visitors * 100) if total_visitors else 0
+            total_dropped = sum(s.get("drop_off_count", 0) for s in funnel_conversion)
+            metrics = {
+                "total_visitors": total_visitors,
+                "final_conversions": final_conversions,
+                "overall_conversion_rate": round(overall_rate, 1),
+                "total_dropped": total_dropped,
+            }
+            # LLM: summary, causes, suggested_actions from data only
+            system_prompt = (
+                "You are a marketing intelligence analyst. You receive funnel_conversion data (step_name, visitors, conversion_rate, drop_off_count, drop_off_rate). "
+                "Output ONLY a valid JSON object with keys: summary (string, 1-2 sentences), causes (array of strings, 2-4 items), suggested_actions (array of objects with label and action_id). "
+                "Use ONLY the numbers provided. Do not invent any metric. suggested_actions may include: Run Latency Analysis, Compare Device Performance, Create Alert, Suggest Fix."
+            )
+            user_content = (
+                f"User question: {user_query or 'Summarize this funnel.'}\n\n"
+                f"funnel_conversion:\n{json.dumps(funnel_conversion, indent=2)}\n\n"
+                "Return only the JSON object, no markdown."
+            )
+            try:
+                raw = call_azure_gpt([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}])
+                # Strip markdown code block if present
+                if "```" in raw:
+                    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+                    raw = re.sub(r"\s*```$", "", raw.strip())
+                parsed = json.loads(raw)
+                summary = parsed.get("summary") or "Funnel analysis completed."
+                causes = parsed.get("causes") if isinstance(parsed.get("causes"), list) else []
+                suggested_actions = parsed.get("suggested_actions") if isinstance(parsed.get("suggested_actions"), list) else []
+                # Normalize suggested_actions to {label, action_id}
+                actions_out = []
+                for a in suggested_actions[:6]:
+                    if isinstance(a, dict):
+                        actions_out.append({"label": a.get("label") or str(a), "action_id": a.get("action_id") or "custom"})
+                    elif isinstance(a, str):
+                        actions_out.append({"label": a, "action_id": "custom"})
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"[ai/chat] LLM parse error: {e}")
+                summary = "Funnel data loaded. Review the steps below for the main drop-off."
+                causes = []
+                actions_out = [
+                    {"label": "Run Latency Analysis", "action_id": "latency"},
+                    {"label": "Compare Device Performance", "action_id": "device"},
+                    {"label": "Create Alert", "action_id": "alert"},
+                ]
+            if not actions_out:
+                actions_out = [
+                    {"label": "Run Latency Analysis", "action_id": "latency"},
+                    {"label": "Compare Device Performance", "action_id": "device"},
+                    {"label": "Create Alert", "action_id": "alert"},
+                ]
+
+            chart_data = [
+                {
+                    "step_name": s.get("step_name", ""),
+                    "visitors": s.get("visitors", 0),
+                    "conversion_rate": s.get("conversion_rate", 0),
+                    "drop_off_count": s.get("drop_off_count", 0),
+                    "drop_off_rate": s.get("drop_off_rate", 0),
+                }
+                for s in funnel_conversion
+            ]
+            return {
+                "type": "funnel_analysis",
+                "summary": summary,
+                "metrics": metrics,
+                "chart_data": chart_data,
+                "causes": causes,
+                "suggested_actions": actions_out,
+                "markdown": f"## Summary\n{summary}\n\n## Observations\n" + "\n".join(f"- {c}" for c in causes) if causes else summary,
+            }
+        # Fallback: use existing insight endpoint logic (markdown only)
+        insight_request = AiInsightRequest(
+            context_name=request.context_name,
+            data=request.data or {},
+            user_query=request.user_query,
+            root_cause_analysis=False,
+        )
+        result = await generate_ai_insight(insight_request)
+        return {"markdown": result.get("insight", ""), "type": "markdown"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI chat error: {str(exc)}")
 
 
 class SuggestionRequest(BaseModel):
@@ -5397,6 +5591,100 @@ async def get_recent_anomalies(limit: int = Query(default=10, ge=1, le=50)) -> D
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Anomalies endpoint error: {str(exc)}")
+
+
+@app.get("/api/ai/activity")
+async def get_ai_activity(limit: int = Query(default=20, ge=1, le=50)) -> Dict[str, Any]:
+    """
+    Returns recent autonomous AI activity (anomaly checks, findings) for the Activity panel.
+    """
+    try:
+        from engines.autonomousAnalyst import get_recent_anomalies as fetch_anomalies, get_last_check_timestamp
+        last_check = get_last_check_timestamp()
+        anomalies = fetch_anomalies(limit)
+        activities = []
+        if last_check:
+            activities.append({
+                "id": "check",
+                "type": "anomaly_check",
+                "description": "Checked funnels",
+                "timestamp": last_check.isoformat(),
+                "status": "ok",
+            })
+            activities.append({
+                "id": "detection",
+                "type": "anomaly_detection",
+                "description": "Ran anomaly detection",
+                "timestamp": last_check.isoformat(),
+                "status": "ok",
+            })
+        for i, a in enumerate(anomalies[:10]):
+            activities.append({
+                "id": f"anomaly-{i}",
+                "type": "anomaly",
+                "description": a.get("description", "Unusual activity detected"),
+                "timestamp": a.get("detected_at", ""),
+                "severity": a.get("severity", "medium"),
+            })
+        return {"activities": activities[:limit]}
+    except ImportError:
+        return {"activities": []}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Activity endpoint error: {str(exc)}")
+
+
+class CreateAlertRequest(BaseModel):
+    """Stub payload for creating an alert."""
+    metric: Optional[str] = None
+    threshold: Optional[str] = None
+    segment: Optional[str] = None
+    message: Optional[str] = None
+
+
+@app.post("/api/alerts")
+async def create_alert(request: CreateAlertRequest) -> Dict[str, Any]:
+    """Stub: create an alert (stored in-memory; later: DB)."""
+    alert_id = str(uuid.uuid4())
+    return {"id": alert_id, "message": "Alert created (stub). Configure notifications in a future release.", "ok": True}
+
+
+class AddToDashboardRequest(BaseModel):
+    """Stub: add a card/chart config to dashboard."""
+    widget_type: Optional[str] = None
+    title: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/dashboard/widgets")
+async def add_to_dashboard(request: AddToDashboardRequest) -> Dict[str, Any]:
+    """Stub: add current card as dashboard widget (later: persist to DB)."""
+    widget_id = str(uuid.uuid4())
+    return {"id": widget_id, "message": "Added to dashboard (stub). Dashboard persistence coming soon.", "ok": True}
+
+
+class ExportReportRequest(BaseModel):
+    """Request for report export."""
+    report_type: Optional[str] = "json"
+    data: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/export/report")
+async def export_report(request: ExportReportRequest) -> Dict[str, Any]:
+    """Stub: export report; returns data for client-side download (CSV/JSON)."""
+    return {"message": "Use the returned data to download as CSV or JSON.", "data": request.data, "ok": True}
+
+
+class ShareRequest(BaseModel):
+    """Stub: share insight/session."""
+    session_id: Optional[str] = None
+    snapshot: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/share")
+async def share_insight(request: ShareRequest) -> Dict[str, Any]:
+    """Stub: generate share link (later: persist snapshot, return URL)."""
+    share_id = str(uuid.uuid4())
+    return {"id": share_id, "url": f"/share/{share_id}", "message": "Share link created (stub).", "ok": True}
 
 
 async def background_anomaly_check():
