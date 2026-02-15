@@ -688,6 +688,17 @@ class FunnelRequest(BaseModel):
     funnel_id: Optional[str] = None  # For demo mode: which preset (default: hospitality_booking)
 
 
+def _funnel_time_filter(request: FunnelRequest, data_window_days: int) -> str:
+    """Build timestamp WHERE fragment from request date_range (UI) or fallback to rolling window."""
+    gf = request.global_filters or {}
+    dr = (gf.get("date_range") if isinstance(gf.get("date_range"), dict) else None) or request.date_range
+    if dr and isinstance(dr, dict) and dr.get("start") and dr.get("end"):
+        start_d, end_d = str(dr["start"]).strip(), str(dr["end"]).strip()
+        if len(start_d) == 10 and len(end_d) == 10 and start_d.replace("-", "").isdigit() and end_d.replace("-", "").isdigit():
+            return f"timestamp >= toDate('{start_d}') AND timestamp < toDate('{end_d}') + INTERVAL 1 DAY"
+    return f"timestamp >= now() - INTERVAL {data_window_days} DAY"
+
+
 # Mapping layer: Human-readable event names to database logic
 EVENT_MAPPING = {
     # Generic Events
@@ -943,6 +954,8 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
         if gf.get("location"):
             location_filter = normalize_location(gf.get("location"))
         
+        time_filter = _funnel_time_filter(request, data_window_days)
+        
         # Build WHERE clause for global filters
         global_where = ""
         location_join = ""
@@ -1018,7 +1031,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                     ) AS funnel_level
                                 FROM raw_events re
                                 INNER JOIN sessions s ON re.session_id = s.session_id
-                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                WHERE {time_filter}
                                   {global_where}
                                   {segment_where}
                                 GROUP BY re.session_id
@@ -1043,7 +1056,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                         {conditions}
                                     ) AS funnel_level
                                 FROM raw_events re
-                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                WHERE {time_filter}
                                   {global_where}
                                   {segment_where}
                                 GROUP BY re.session_id
@@ -1071,7 +1084,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                     ) AS funnel_level
                                 FROM raw_events re
                                 INNER JOIN sessions s ON re.session_id = s.session_id
-                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                WHERE {time_filter}
                                   {global_where}
                                   {segment_where}
                                 GROUP BY re.session_id
@@ -1093,7 +1106,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                         {conditions}
                                     ) AS funnel_level
                                 FROM raw_events re
-                                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                                WHERE {time_filter}
                                   {global_where}
                                   {segment_where}
                                 GROUP BY session_id
@@ -1185,7 +1198,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                 {conditions}
                             ) AS funnel_level
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           {global_where}
                         GROUP BY re.session_id
                     ) AS funneled
@@ -1211,7 +1224,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                 {conditions}
                             ) AS funnel_level
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           {global_where}
                         GROUP BY re.session_id
                     ) AS funneled
@@ -1235,7 +1248,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                 {conditions}
                             ) AS funnel_level
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           {global_where}
                         GROUP BY session_id
                     ) AS funneled
@@ -1259,7 +1272,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                                 {conditions}
                             ) AS funnel_level
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           {global_where}
                         GROUP BY session_id
                     ) AS funneled
@@ -1340,14 +1353,14 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                         FROM (
                             SELECT session_id, timestamp
                             FROM raw_events
-                            WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                            WHERE {time_filter}
                               AND {step_condition}
                               {global_where}
                         ) AS step1
                         INNER JOIN (
                             SELECT session_id, min(timestamp) AS timestamp
                             FROM raw_events
-                            WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                            WHERE {time_filter}
                               AND {next_step_condition}
                               {global_where}
                             GROUP BY session_id
@@ -1362,7 +1375,7 @@ async def get_funnel_data(request: FunnelRequest) -> Dict[str, Any]:
                             avg(time_on_page_seconds) AS avg_time,
                             quantile(0.5)(time_on_page_seconds) AS median_time
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           AND {step_condition}
                           AND time_on_page_seconds > 0
                           {global_where}
@@ -1734,6 +1747,7 @@ async def get_funnel_over_time(request: FunnelRequest) -> Dict[str, Any]:
         
         # Data selection window: Use a larger window to ensure we capture all relevant sessions
         data_window_days = max(90, request.completed_within * 3)
+        time_filter = _funnel_time_filter(request, data_window_days)
         
         counting_method = request.counting_by or "unique_users"
         
@@ -1775,7 +1789,7 @@ async def get_funnel_over_time(request: FunnelRequest) -> Dict[str, Any]:
                         {conditions}
                     ) AS funnel_level
                 FROM raw_events
-                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                WHERE {time_filter}
                   {global_where}
                 GROUP BY session_id
             ) AS funneled
@@ -1837,6 +1851,8 @@ async def get_funnel_latency(request: FunnelRequest) -> Dict[str, Any]:
             return {"data": []}
         
         data_window_days = max(90, request.completed_within * 3)
+        time_filter = _funnel_time_filter(request, data_window_days)
+        time_filter_re = time_filter.replace("timestamp", "re.timestamp")
         
         # Global filters
         gf = request.global_filters or {}
@@ -1878,7 +1894,7 @@ async def get_funnel_latency(request: FunnelRequest) -> Dict[str, Any]:
                     -- Find first time each step was reached
                     {', '.join(minif_conditions)}
                 FROM raw_events re
-                WHERE re.timestamp >= now() - INTERVAL {data_window_days} DAY
+                WHERE {time_filter_re}
                   {location_where}
                 GROUP BY re.session_id
                 HAVING first_step_1 IS NOT NULL  -- Only sessions that started the funnel
@@ -1994,6 +2010,7 @@ async def get_path_analysis(request: FunnelRequest) -> Dict[str, Any]:
             return {"data": []}
         
         data_window_days = max(90, request.completed_within * 3)
+        time_filter = _funnel_time_filter(request, data_window_days)
         
         # Global filters
         gf = request.global_filters or {}
@@ -2029,7 +2046,7 @@ async def get_path_analysis(request: FunnelRequest) -> Dict[str, Any]:
                 WITH dropped_users AS (
                     SELECT DISTINCT re.session_id
                     FROM raw_events re
-                    WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                    WHERE {time_filter}
                       AND {step_condition}
                       {global_where}
                       AND NOT EXISTS (
@@ -2193,6 +2210,7 @@ async def get_price_sensitivity(request: FunnelRequest) -> Dict[str, Any]:
             return {"data": []}
         
         data_window_days = max(90, request.completed_within * 3)
+        time_filter = _funnel_time_filter(request, data_window_days)
         
         # Global filters
         gf = request.global_filters or {}
@@ -2225,7 +2243,7 @@ async def get_price_sensitivity(request: FunnelRequest) -> Dict[str, Any]:
                     quantile(0.75)(price_viewed_amount) AS p75_price,
                     count(DISTINCT session_id) AS sessions_with_price
                 FROM raw_events re
-                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                WHERE {time_filter}
                   AND {step_condition}
                   AND price_viewed_amount > 0
                   {global_where}
@@ -2259,7 +2277,7 @@ async def get_price_sensitivity(request: FunnelRequest) -> Dict[str, Any]:
                             max(CASE WHEN {prev_step_condition} THEN price_viewed_amount END) AS prev_price,
                             max(CASE WHEN {step_condition} THEN price_viewed_amount END) AS current_price
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           AND ({prev_step_condition} OR {step_condition})
                           AND price_viewed_amount > 0
                           {global_where}
@@ -2282,7 +2300,7 @@ async def get_price_sensitivity(request: FunnelRequest) -> Dict[str, Any]:
                     WITH price_increases AS (
                         SELECT DISTINCT re.session_id
                         FROM raw_events re
-                        WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                        WHERE {time_filter}
                           AND {step_condition}
                           AND price_viewed_amount > 0
                           {global_where}
@@ -2341,6 +2359,7 @@ async def get_cohort_analysis(request: FunnelRequest) -> Dict[str, Any]:
             return {"data": []}
         
         data_window_days = max(90, request.completed_within * 3)
+        time_filter = _funnel_time_filter(request, data_window_days)
         
         # Global filters
         gf = request.global_filters or {}
@@ -2376,7 +2395,7 @@ async def get_cohort_analysis(request: FunnelRequest) -> Dict[str, Any]:
                 WITH dropped_users AS (
                     SELECT DISTINCT re.session_id, re.user_id, max(re.timestamp) AS drop_timestamp
                     FROM raw_events re
-                    WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                    WHERE {time_filter}
                       AND {step_condition}
                       {global_where}
                       AND NOT EXISTS (
@@ -2427,7 +2446,7 @@ async def get_cohort_analysis(request: FunnelRequest) -> Dict[str, Any]:
                     count(DISTINCT CASE WHEN is_returning_visitor = false THEN re.user_id END) AS first_time,
                     count(DISTINCT CASE WHEN is_returning_visitor = true THEN re.user_id END) AS returning
                 FROM raw_events re
-                WHERE timestamp >= now() - INTERVAL {data_window_days} DAY
+                WHERE {time_filter}
                   AND {step_condition}
                   {global_where}
             """

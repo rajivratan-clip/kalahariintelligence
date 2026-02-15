@@ -1517,6 +1517,22 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                     );
                   }
                   
+                  // No data for selected date range: don't show chart
+                  const hasNoData = data.length === 0 || data.every(s => (s.visitors ?? 0) === 0);
+                  if (hasNoData) {
+                    return (
+                      <div className="flex items-center justify-center h-full">
+                        <div className="text-center text-slate-500 max-w-md">
+                          <Calendar size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                          <p className="text-lg font-medium text-slate-700 mb-2">No data for selected date range</p>
+                          <p className="text-sm text-slate-500">
+                            There are no events in the database for the chosen dates. Try a different date range.
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  }
+                  
                   // Default single-funnel view (no segments)
                   return (
                     <>
@@ -1762,11 +1778,19 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                         name
                       ]}
                     />
-                  ) : (
+                  ) : isLoading ? (
                     <div className="h-full flex items-center justify-center text-slate-400">
                       <div className="text-center">
                         <Clock size={48} className="mx-auto mb-4 opacity-50" />
                         <p>Loading time-series data...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-slate-500">
+                      <div className="text-center max-w-md">
+                        <Calendar size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                        <p className="text-lg font-medium text-slate-700 mb-2">No data for selected date range</p>
+                        <p className="text-sm text-slate-500">There are no events for the chosen dates. Try a different date range.</p>
                       </div>
                     </div>
                   )}
@@ -1867,15 +1891,28 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                       </div>
                     )}
                   </>
+                ) : isLoading ? (
+                  <div className="flex items-center justify-center h-[400px]">
+                    <div className="text-center text-slate-400">
+                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">Calculating time metrics...</p>
+                    </div>
+                  </div>
+                ) : (data.length === 0 || data.every(s => (s.visitors ?? 0) === 0)) ? (
+                  <div className="flex items-center justify-center h-[400px]">
+                    <div className="text-center text-slate-500 max-w-md">
+                      <Calendar size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                      <p className="text-lg font-medium text-slate-700 mb-2">No data for selected date range</p>
+                      <p className="text-sm text-slate-500">Try a different date range to see time-to-convert metrics.</p>
+                    </div>
+                  </div>
                 ) : (
                   <div className="flex items-center justify-center h-[400px]">
                     <div className="text-center text-slate-400">
-                             <Clock size={48} className="mx-auto mb-4 opacity-50" />
-                      <p className="text-sm">
-                        {data.length > 0 ? 'Calculating time metrics...' : 'Configure funnel to see time data'}
-                      </p>
-                         </div>
+                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">Configure funnel to see time data</p>
                     </div>
+                  </div>
                 )}
             </div>
                 )}
@@ -1883,7 +1920,23 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
             {activeTab === 'pathAnalysis' && (
               <div className="p-6 space-y-4">
                 <h3 className="text-lg font-semibold text-slate-800 mb-4">Where Users Go After Dropping</h3>
-                {pathAnalysisData.map((analysis, idx) => (
+                {pathAnalysisData.length === 0 && !isLoading && (data.length === 0 || data.every(s => (s.visitors ?? 0) === 0)) ? (
+                  <div className="flex items-center justify-center h-[300px]">
+                    <div className="text-center text-slate-500 max-w-md">
+                      <Calendar size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                      <p className="text-lg font-medium text-slate-700 mb-2">No data for selected date range</p>
+                      <p className="text-sm text-slate-500">Try a different date range to see path analysis.</p>
+                    </div>
+                  </div>
+                ) : pathAnalysisData.length === 0 ? (
+                  <div className="flex items-center justify-center h-[300px] text-slate-400">
+                    <div className="text-center">
+                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">Loading path analysis...</p>
+                    </div>
+                  </div>
+                ) : (
+                pathAnalysisData.map((analysis, idx) => (
                   <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="font-medium text-slate-700">{analysis.step_name} → {analysis.next_step}</h4>
@@ -1929,14 +1982,31 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                       </div>
                     )}
                   </div>
-                ))}
+                ))
+                )}
               </div>
             )}
 
             {activeTab === 'priceSensitivity' && (
               <div className="p-6 space-y-4">
                 <h3 className="text-lg font-semibold text-slate-800 mb-4">Price Changes Through Funnel</h3>
-                {priceSensitivityData.map((step, idx) => (
+                {priceSensitivityData.length === 0 && !isLoading && (data.length === 0 || data.every(s => (s.visitors ?? 0) === 0)) ? (
+                  <div className="flex items-center justify-center h-[300px]">
+                    <div className="text-center text-slate-500 max-w-md">
+                      <Calendar size={48} className="mx-auto mb-4 opacity-40 text-slate-300" />
+                      <p className="text-lg font-medium text-slate-700 mb-2">No data for selected date range</p>
+                      <p className="text-sm text-slate-500">Try a different date range to see price sensitivity.</p>
+                    </div>
+                  </div>
+                ) : priceSensitivityData.length === 0 ? (
+                  <div className="flex items-center justify-center h-[300px] text-slate-400">
+                    <div className="text-center">
+                      <Clock size={48} className="mx-auto mb-4 opacity-50" />
+                      <p className="text-sm">Loading price data...</p>
+                    </div>
+                  </div>
+                ) : (
+                priceSensitivityData.map((step, idx) => (
                   <div key={idx} className="border border-slate-200 rounded-lg p-4 bg-white">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="font-medium text-slate-700">{step.step_name}</h4>
@@ -1961,7 +2031,8 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
                       </div>
                     </div>
                   </div>
-                ))}
+                ))
+                )}
               </div>
             )}
 
@@ -2591,7 +2662,7 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
           ))}
         </select>
         
-        {/* Value Selector - Shows dropdown of actual values with counts */}
+        {/* Value Selector - Shows dropdown of actual values (no counts) */}
         <select
           value={selectedValue}
           onChange={(e) => setSelectedValue(e.target.value)}
@@ -2602,7 +2673,7 @@ const SegmentFilterBuilder: React.FC<SegmentFilterBuilderProps> = ({ segmentValu
           {availableValues && availableValues.length > 0 ? (
             availableValues.map((val: any) => (
               <option key={val.value} value={val.value}>
-                {val.label} {val.count ? `(${val.count.toLocaleString()})` : ''}
+                {val.label}
               </option>
             ))
           ) : (

@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus, Filter, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { BarChart3, TrendingUp, Users, GitBranch, Sparkles, DollarSign, Clock, Target, X, Plus, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import FunnelLab from './FunnelLab';
 import RevenueImpactView from './RevenueImpactView';
 import HospitalityMetricsView from './HospitalityMetricsView';
 import AIInsightsView from './AIInsightsView';
 import SegmentationView from './SegmentationView';
-import DateFilter, { DateRange } from './DateFilter';
+import type { DateRange } from './DateFilter';
 import AutonomousFunnelBuilder from './AutonomousFunnelBuilder';
 import { FunnelDefinition, FunnelStepConfig, AnalyticsConfigUpdate, ViewConfig } from '../types';
 import { useAiOrchestrator } from '../engines/useAiOrchestrator';
@@ -748,17 +748,6 @@ const AnalyticsStudio: React.FC<AnalyticsStudioProps> = ({ onExplain, onOpenAskA
               {analysisType === 'paths' && (
                 <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0947A4]" />
               )}
-            </button>
-          </div>
-
-          {/* Filters Row */}
-          <div className="flex items-center gap-3 py-3 border-t border-slate-200">
-            <div className="flex items-center gap-2">
-              <DateFilter value={dateRange} onChange={setDateRange} />
-            </div>
-            <button className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
-              <Filter size={14} />
-              <span>More Filters</span>
             </button>
           </div>
         </div>

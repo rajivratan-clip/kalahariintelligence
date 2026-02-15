@@ -28,6 +28,9 @@ dist-ssr
 .env.local
 .env.*.local
 
+# Project
+.kalahari/
+
 # Python
 __pycache__/
 *.py[cod]
