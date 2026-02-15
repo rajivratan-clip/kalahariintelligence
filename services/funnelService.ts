@@ -1,7 +1,7 @@
 import { FunnelDefinition, FunnelStep, EventFilter } from '../types';
 import { generateRealisticFunnelData, generateFrictionData } from './mockDataGenerator';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:8000';
 
 // Set to false to use real ClickHouse data, true for mock demo data
 const USE_MOCK_DATA = false; // Changed to false to use your real ClickHouse data

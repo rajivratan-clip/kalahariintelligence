@@ -45,7 +45,7 @@ const HospitalityMetricsView: React.FC<HospitalityMetricsViewProps> = ({ config 
   const [dateRange, setDateRange] = useState<DateRange | null>(null);
   const [segmentChartType, setSegmentChartType] = useState<ChartType>('bar');
   const [intentChartType, setIntentChartType] = useState<ChartType>('pie');
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:8000';
 
   // Initialize with default date range (last 30 days)
   useEffect(() => {

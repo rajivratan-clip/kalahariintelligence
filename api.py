@@ -1,6 +1,8 @@
+from pathlib import Path
 from typing import Any, List, Optional, Dict
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from database import run_query
 import os
@@ -5570,3 +5572,9 @@ async def analyze_segments(request: SegmentRequest) -> Dict[str, Any]:
     except Exception as exc:
         print(f"[Segment Analysis] Error: {exc}")
         raise HTTPException(status_code=500, detail=f"Segment analysis error: {str(exc)}")
+
+
+# Serve built frontend in production (single-container Docker deployment)
+_dist = Path(__file__).resolve().parent / "dist"
+if _dist.exists():
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="spa")

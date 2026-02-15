@@ -121,7 +121,7 @@ const SegmentationView: React.FC<SegmentationViewProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [showEventModal, setShowEventModal] = useState(false);
   
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:8000';
 
   // Initialize with default date range (last 30 days)
   useEffect(() => {

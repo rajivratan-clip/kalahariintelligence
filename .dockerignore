@@ -1,0 +1,40 @@
+# Dependencies (reinstalled in container)
+node_modules
+.pnp
+.pnp.js
+
+# Build output
+dist
+
+# Git and env
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+env.example
+
+# Python
+__pycache__
+*.py[cod]
+.venv
+venv
+*.egg-info
+
+# IDE and OS
+.idea
+.vscode
+*.swp
+.DS_Store
+
+# Docs and misc
+*.md
+!README.md
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Scripts (not needed in image)
+scripts

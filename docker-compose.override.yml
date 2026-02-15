@@ -1,0 +1,9 @@
+# Local dev: backend code mounted, uvicorn --reload. Loaded automatically with docker-compose up.
+
+services:
+  app:
+    volumes:
+      - ./api.py:/app/api.py
+      - ./database.py:/app/database.py
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    user: "0:0"

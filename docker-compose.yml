@@ -1,0 +1,14 @@
+# Single container: frontend build + backend. Uses .env for CLICKHOUSE_* etc.
+# Create .env from env.example if needed.
+#
+# Local dev (reload on backend changes):  docker-compose up
+# Prod-like (no reload):                  docker-compose -f docker-compose.yml up --build
+
+services:
+  app:
+    build: .
+    env_file: .env
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1

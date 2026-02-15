@@ -201,7 +201,7 @@ const FunnelLab: React.FC<FunnelLabProps> = ({ onExplain, onExplainPayloadReady,
   const [dateRange, setDateRange] = useState<DateRange | null>(null);
   const [overTimeChartType, setOverTimeChartType] = useState<ChartType>('area');
   const [conversionChartType, setConversionChartType] = useState<ChartType>('bar');
-  const API_BASE = 'http://localhost:8000';
+  const API_BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL) || 'http://localhost:8000';
 
   // Initialize with default date range (last 30 days)
   useEffect(() => {
